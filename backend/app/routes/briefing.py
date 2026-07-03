@@ -134,10 +134,10 @@ async def _run_generation(
                     audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
 
                     if first:
-                        channels = audio_np.shape[1] if audio_np.ndim == 2 else 1
+                        # generate_audio_streaming always outputs mono (1D)
                         sf_file = sf.SoundFile(
                             str(temp_path), mode="w",
-                            samplerate=int(sr), channels=int(channels),
+                            samplerate=int(sr), channels=1,
                             subtype="PCM_16",
                         )
                         first = False
@@ -155,24 +155,38 @@ async def _run_generation(
                         "audio_base64": base64.b64encode(audio_bytes).decode("utf-8"),
                     })
 
+            # ── Atomically persist the audio file ──
             if sf_file:
+                # 1. flush & close (may raise on e.g. disk full)
+                sf_file.flush()
                 sf_file.close()
 
-            # Rename tmp → final
-            if temp_path.exists():
+            # 2. Only rename if the temp file exists and has content
+            file_saved = False
+            if temp_path and temp_path.exists() and temp_path.stat().st_size > 44:  # > WAV header
                 temp_path.rename(final_path)
-            audio_path = str(final_path.relative_to(AUDIO_DIR))
+                audio_path = str(final_path.relative_to(AUDIO_DIR))
+                file_saved = True
 
-            async with async_session() as bg_db:
-                b = await bg_db.get(DailyBriefing, briefing_id)
-                if b:
-                    b.audio_path = audio_path
-                    b.status = "completed"
-                    await bg_db.commit()
+            if file_saved:
+                async with async_session() as bg_db:
+                    b = await bg_db.get(DailyBriefing, briefing_id)
+                    if b:
+                        b.audio_path = audio_path
+                        b.status = "completed"
+                        await bg_db.commit()
 
-            await queue.put({"type": "done", "audio_path": audio_path})
-            logger.info("Background generation complete: %s", final_path)
-            success = True
+                await queue.put({"type": "done", "audio_path": audio_path})
+                logger.info("Background generation complete: %s", final_path)
+                success = True
+            else:
+                logger.error("No valid audio data written for briefing %s", briefing_id)
+                await queue.put({"type": "error", "message": "音频生成失败：无有效音频数据"})
+                async with async_session() as bg_db:
+                    b = await bg_db.get(DailyBriefing, briefing_id)
+                    if b and b.status == "generating":
+                        b.status = "failed"
+                        await bg_db.commit()
 
         else:
             # ── Non-streaming (moss-ttsd) ──
