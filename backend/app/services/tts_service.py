@@ -245,10 +245,11 @@ class MossTTSNanoBackend(TTSBackend):
             loop = asyncio.get_running_loop()
 
             def _load():
+                import os
                 from app.onnx_tts import OnnxTtsRuntime
                 return OnnxTtsRuntime(
                     model_dir=str(_ONNX_TTS_MODEL_DIR),
-                    thread_count=4,
+                    thread_count=max(1, os.cpu_count() or 1),
                     max_new_frames=375,
                     do_sample=True,
                     sample_mode="fixed",
