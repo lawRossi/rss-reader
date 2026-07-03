@@ -15,10 +15,11 @@ export const useArticleStore = defineStore('articles', () => {
   })
 
   async function loadArticles(filters = {}) {
-    loading.value = true
+    const page = filters.page ?? 1
+    // Only show full-page loading skeleton on first page load (not during pagination)
+    if (page === 1) loading.value = true
     try {
       // Build request params: persistent pagination + current filters
-      const page = filters.page ?? 1
       const mergedParams = {
         ...params.value,
         ...filters,
@@ -42,7 +43,7 @@ export const useArticleStore = defineStore('articles', () => {
     } catch (e) {
       console.error('Failed to load articles:', e)
     } finally {
-      loading.value = false
+      if (page === 1) loading.value = false
     }
   }
 
