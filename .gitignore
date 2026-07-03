@@ -1,0 +1,55 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+.venv/
+venv/
+.env
+*.db
+*.sqlite3
+
+# ── Node / Frontend ─────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── TTS ONNX Models (大文件, 首次运行时自动下载) ──────────────────────────
+backend/app/onnx_tts/models/
+backend/app/onnx_tts/.cache/
+backend/app/onnx_tts/generated_audio/
+
+# ── Audio files (generated) ─────────────────────────────────────────────────
+audio/*.wav
+audio/*.mp3
+
+# ── MLX models ──────────────────────────────────────────────────────────────
+data/mlx-int8/*.safetensors
+data/mlx-int8/*.bin
+
+# ── IDE / Editor ────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+*.log
+/var/log/
+
+# ── Test artifacts ──────────────────────────────────────────────────────────
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ── Reports (generated) ─────────────────────────────────────────────────────
+plans/reports/
+reports/

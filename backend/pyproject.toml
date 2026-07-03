@@ -1,0 +1,41 @@
+[tool.poetry]
+name = "rss-reader-backend"
+version = "0.1.0"
+description = "RSS Reader Web Application Backend"
+authors = ["RSS Reader Team"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+fastapi = "^0.115"
+uvicorn = {extras = ["standard"], version = "^0.34"}
+sqlalchemy = ">=2.0.36"
+aiosqlite = "^0.20"
+feedparser = "^6.0"
+httpx = "^0.28"
+beautifulsoup4 = "^4.12"
+lxml = "^5.3"
+python-multipart = "^0.0.18"
+pydantic = "^2.10"
+pydantic-settings = "^2.7"
+sse-starlette = "^2.2"
+greenlet = "^3.0"
+weasyprint = "^69.0"
+soundfile = ">=0.13"
+apscheduler = "^3.10"
+
+# ── MOSS-TTS-Nano ONNX 语音克隆 ──
+onnxruntime = "^1.17"
+sentencepiece = "^0.2"
+huggingface-hub = "^0.27"
+
+# ── WeTextProcessing 文本正则化（可选增强，用于 TTS 中文文本预处理） ──
+tn = "^0.0.5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-asyncio = "^0.25"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
