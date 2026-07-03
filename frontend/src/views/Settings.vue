@@ -336,6 +336,51 @@
       </div>
     </div>
 
+    <!-- Feed Fetch Configuration -->
+    <div class="bg-[var(--color-surface)] rounded-2xl p-6 border border-[var(--color-border)] space-y-6">
+      <h3 class="font-semibold text-[var(--color-text)] border-b border-[var(--color-border)] pb-3">📡 定期抓取</h3>
+
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-[var(--color-text)] mb-1">抓取间隔（分钟）</label>
+          <div class="flex gap-2">
+            <input v-model.number="fetchIntervalInput" type="number" min="1" max="1440"
+              class="w-32 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]" />
+            <span class="text-sm text-[var(--color-text-secondary)] self-center">分钟（最小 1 分钟）</span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 text-sm">
+          <div class="p-3 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
+            <div class="text-[var(--color-text-secondary)]">上次抓取</div>
+            <div class="font-medium text-[var(--color-text)] mt-1">{{ fetchStatus.last_run ? formatTime(fetchStatus.last_run) : '暂无记录' }}</div>
+          </div>
+          <div class="p-3 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
+            <div class="text-[var(--color-text-secondary)]">下次抓取</div>
+            <div class="font-medium text-[var(--color-text)] mt-1">{{ fetchStatus.next_run ? formatTime(fetchStatus.next_run) : '未调度' }}</div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 pt-2">
+          <button @click="saveFetchInterval" :disabled="savingFetchInterval"
+            class="px-4 py-2 bg-[var(--color-primary)] text-white rounded-lg text-sm disabled:opacity-50">
+            {{ savingFetchInterval ? '保存中...' : '💾 保存间隔' }}
+          </button>
+          <button @click="triggerFetch" :disabled="fetchingNow"
+            class="px-4 py-2 rounded-lg border border-[var(--color-border)] text-[var(--color-text)] text-sm disabled:opacity-50">
+            {{ fetchingNow ? '抓取中...' : '🚀 立即抓取' }}
+          </button>
+          <button @click="loadFetchStatus" class="px-4 py-2 rounded-lg border border-[var(--color-border)] text-[var(--color-text)] text-sm">
+            🔄 刷新状态
+          </button>
+        </div>
+
+        <div v-if="fetchMessage" class="p-3 rounded-lg text-sm" :class="fetchMessage.success ? 'bg-green-50 dark:bg-green-900/20 text-green-600' : 'bg-red-50 dark:bg-red-900/20 text-red-600'">
+          {{ fetchMessage.text }}
+        </div>
+      </div>
+    </div>
+
     <!-- About -->
     <div class="bg-[var(--color-surface)] rounded-2xl p-6 border border-[var(--color-border)] space-y-4">
       <h3 class="font-semibold text-[var(--color-text)] border-b border-[var(--color-border)] pb-3">📋 关于</h3>
@@ -352,7 +397,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, inject } from 'vue'
 import { useSettingsStore } from '../stores/settingsStore'
-import api, { settingsApi, briefingsApi } from '../api'
+import api, { settingsApi, briefingsApi, feedsApi } from '../api'
 
 const settingsStore = useSettingsStore()
 const showToast = inject('showToast')
@@ -369,6 +414,13 @@ const showBriefingLlm = ref(false)
 const ttsEngines = ref({})
 const ttsStatus = ref({})
 const checkingTts = ref(false)
+
+// Feed fetch status
+const fetchStatus = ref({ interval_minutes: null, next_run: null, last_run: null })
+const fetchIntervalInput = ref(30)
+const savingFetchInterval = ref(false)
+const fetchingNow = ref(false)
+const fetchMessage = ref(null)
 
 const selectedFile = ref(null)
 const refAudioName = ref('')
@@ -426,6 +478,7 @@ onMounted(async () => {
     loadSettings(),
     loadTtsEngines(),
     loadRefAudios(),
+    loadFetchStatus(),
   ])
   loading.value = false
   // Note: TTS backend status is NOT checked on mount — it requires downloading
@@ -530,6 +583,71 @@ async function addAudio() {
   } finally {
     addingAudio.value = false
   }
+}
+
+// ── Feed Fetch ──
+
+async function loadFetchStatus() {
+  try {
+    const res = await feedsApi.fetchStatus()
+    fetchStatus.value = res.data
+    if (res.data.interval_minutes) {
+      fetchIntervalInput.value = res.data.interval_minutes
+    }
+  } catch (e) {
+    console.error('Failed to load fetch status:', e)
+  }
+}
+
+async function triggerFetch() {
+  fetchingNow.value = true
+  fetchMessage.value = null
+  try {
+    const res = await feedsApi.fetchNow()
+    fetchMessage.value = { success: true, text: res.data.message || '抓取已触发' }
+  } catch (e) {
+    fetchMessage.value = { success: false, text: '抓取触发失败: ' + (e.response?.data?.detail || e.message) }
+  } finally {
+    fetchingNow.value = false
+  }
+}
+
+async function saveFetchInterval() {
+  savingFetchInterval.value = true
+  fetchMessage.value = null
+  try {
+    await settingsStore.saveSettings({
+      fetch_interval: String(fetchIntervalInput.value),
+    })
+    await loadFetchStatus()
+    fetchMessage.value = { success: true, text: `抓取间隔已更新为 ${fetchIntervalInput.value} 分钟` }
+  } catch (e) {
+    fetchMessage.value = { success: false, text: '保存失败: ' + (e.response?.data?.detail || e.message) }
+  } finally {
+    savingFetchInterval.value = false
+  }
+}
+
+function formatTime(isoString) {
+  if (!isoString) return ''
+  const d = new Date(isoString)
+  const now = new Date()
+  const diffMs = now - d
+  const diffMin = Math.floor(diffMs / 60000)
+
+  if (diffMin < 1) return '刚刚'
+  if (diffMin < 60) return `${diffMin} 分钟前`
+
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const hour = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+
+  if (year === now.getFullYear() && month === String(now.getMonth() + 1).padStart(2, '0') && day === String(now.getDate()).padStart(2, '0')) {
+    return `今天 ${hour}:${min}`
+  }
+  return `${month}-${day} ${hour}:${min}`
 }
 
 async function loadTtsEngines() {

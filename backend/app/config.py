@@ -36,6 +36,11 @@ DEFAULT_TTS_SETTINGS = {
     "tts_nano_temperature": "0.5",     # 生成温度（音色克隆建议 0.3-0.6，越低越稳定）
 }
 
+# Default fetch settings
+DEFAULT_FETCH_SETTINGS = {
+    "fetch_interval": "30",  # RSS feed fetch interval in minutes
+}
+
 # TTS engine options
 TTS_ENGINE_OPTIONS = {
     "moss-ttsd": {

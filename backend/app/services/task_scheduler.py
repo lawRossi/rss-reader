@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import select
+from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy import select, func
 
 from app.database import async_session
 from app.models import ScheduledTask, Setting
@@ -66,18 +67,29 @@ class TaskScheduler:
     def __init__(self):
         self.scheduler = AsyncIOScheduler(timezone=LOCAL_TZ)
         self._locks: dict[int, asyncio.Lock] = {}
+        self._FETCH_JOB_ID = "_feed_fetch"
 
     async def start(self):
         """Start the scheduler and load all enabled tasks from DB."""
         self.scheduler.start()
         async with async_session() as db:
+            # Register periodic feed fetch job
+            result = await db.execute(
+                select(Setting).where(Setting.key == "fetch_interval")
+            )
+            fetch_setting = result.scalar_one_or_none()
+            interval = int(fetch_setting.value) if fetch_setting and fetch_setting.value else 30
+            self._register_fetch_job(interval)
+            logger.info(f"Feed fetch job registered (interval={interval}min)")
+
+            # Register briefing tasks
             result = await db.execute(
                 select(ScheduledTask).where(ScheduledTask.enabled == True)
             )
             tasks = result.scalars().all()
             for task in tasks:
                 self._add_job(task)
-            logger.info(f"Scheduler started with {len(tasks)} active task(s)")
+            logger.info(f"Scheduler started with {len(tasks)} active briefing task(s)")
 
     async def stop(self):
         """Stop the scheduler gracefully."""
@@ -112,6 +124,73 @@ class TaskScheduler:
         if self.scheduler.get_job(job_id):
             self.scheduler.remove_job(job_id)
             logger.info(f"Job removed: {job_id}")
+
+    # ── Feed fetch job management ──
+
+    def _register_fetch_job(self, interval_minutes: int):
+        """Register the periodic feed fetch job with APScheduler.
+
+        Args:
+            interval_minutes: Fetch interval in minutes.
+        """
+        interval = max(1, int(interval_minutes))
+        trigger = IntervalTrigger(minutes=interval)
+        self.scheduler.add_job(
+            self._execute_fetch_job,
+            trigger=trigger,
+            id=self._FETCH_JOB_ID,
+            name="Feed Fetch",
+            misfire_grace_time=600,
+            coalesce=True,
+            replace_existing=True,
+        )
+        logger.info(f"Feed fetch job registered: interval={interval}min")
+
+    async def update_fetch_interval(self, interval_minutes: int):
+        """Update the feed fetch interval dynamically.
+
+        Removes the existing fetch job and re-registers it with the new interval.
+        Validates that interval is at least 1 minute.
+
+        Args:
+            interval_minutes: New interval in minutes (must be >= 1).
+        """
+        interval = max(1, int(interval_minutes))
+        # Remove existing job
+        if self.scheduler.get_job(self._FETCH_JOB_ID):
+            self.scheduler.remove_job(self._FETCH_JOB_ID)
+        # Re-register with new interval
+        self._register_fetch_job(interval)
+        logger.info(f"Feed fetch interval updated to {interval}min")
+
+    async def _execute_fetch_job(self):
+        """APScheduler job callback for periodic feed fetching."""
+        from app.services.feed_fetcher import fetch_all_feeds
+
+        logger.info("⏰ Feed fetch job triggered")
+        try:
+            await fetch_all_feeds()
+            logger.info("Feed fetch job completed successfully")
+        except Exception as e:
+            logger.error(f"Feed fetch job failed: {e}", exc_info=True)
+
+    def get_fetch_job_status(self) -> dict:
+        """Get the current feed fetch job status.
+
+        Returns:
+            dict with 'interval_minutes' and 'next_run' (ISO format or None).
+        """
+        job = self.scheduler.get_job(self._FETCH_JOB_ID)
+        if job is None:
+            return {"interval_minutes": None, "next_run": None}
+        try:
+            next_run = job.next_run_time.isoformat() if job.next_run_time else None
+        except Exception:
+            next_run = None
+        return {
+            "interval_minutes": job.trigger.interval_length // 60 if hasattr(job.trigger, 'interval_length') else None,
+            "next_run": next_run,
+        }
 
     # ── Public API for route handlers ──
 

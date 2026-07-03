@@ -67,6 +67,8 @@ export const feedsApi = {
     api.post('/feeds/import-opml', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
+  fetchStatus: () => api.get('/feeds/fetch-status'),
+  fetchNow: () => api.post('/feeds/fetch-now'),
 }
 
 // ─── Articles ───

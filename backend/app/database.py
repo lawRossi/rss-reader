@@ -57,12 +57,12 @@ async def init_db():
 
 
 async def seed_default_settings():
-    """Insert default LLM and TTS settings if not present."""
+    """Insert default LLM, TTS and fetch settings if not present."""
     from app.models import Setting
-    from app.config import DEFAULT_LLM_SETTINGS, DEFAULT_TTS_SETTINGS
+    from app.config import DEFAULT_LLM_SETTINGS, DEFAULT_TTS_SETTINGS, DEFAULT_FETCH_SETTINGS
 
     async with async_session() as session:
-        all_defaults = {**DEFAULT_LLM_SETTINGS, **DEFAULT_TTS_SETTINGS}
+        all_defaults = {**DEFAULT_LLM_SETTINGS, **DEFAULT_TTS_SETTINGS, **DEFAULT_FETCH_SETTINGS}
         for key, value in all_defaults.items():
             existing = await session.get(Setting, key)
             if existing is None:

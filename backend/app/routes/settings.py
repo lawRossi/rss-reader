@@ -14,6 +14,7 @@ from app.database import get_db, async_session
 from app.models import Setting
 from app.schemas import SettingOut, SettingsUpdate, TtsEngineOptions
 from app.config import TTS_ENGINE_OPTIONS, AUDIO_DIR
+from app.services.task_scheduler import scheduler
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
@@ -78,6 +79,19 @@ async def update_settings(update: SettingsUpdate, db: AsyncSession = Depends(get
         else:
             db.add(Setting(key=key, value=value))
     await db.flush()
+
+    # Notify scheduler if fetch_interval changed
+    if "fetch_interval" in update.settings:
+        try:
+            interval = int(update.settings["fetch_interval"])
+            if interval < 1:
+                raise ValueError("fetch_interval must be >= 1")
+            await scheduler.update_fetch_interval(interval)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid fetch_interval: {e}",
+            )
     result = await db.execute(select(Setting))
     return result.scalars().all()
 

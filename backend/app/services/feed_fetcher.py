@@ -1,7 +1,6 @@
 """RSS feed fetching and article extraction service."""
 
 import logging
-import asyncio
 from datetime import datetime, timezone
 
 import feedparser
@@ -101,31 +100,14 @@ def _parse_date(entry):
     return None
 
 
-# ─── Background periodic fetching ───
+# ─── Batch fetch all feeds ───
 
-_background_task = None
+async def fetch_all_feeds():
+    """Fetch all feeds and save new articles.
 
-
-async def start_periodic_fetch(interval_minutes: int = 30):
-    """Start background task to periodically fetch all feeds."""
-    global _background_task
-    if _background_task is not None:
-        _background_task.cancel()
-
-    async def _run():
-        while True:
-            try:
-                await _fetch_all_feeds()
-            except Exception as e:
-                logger.error(f"Periodic fetch error: {e}")
-            await asyncio.sleep(interval_minutes * 60)
-
-    _background_task = asyncio.create_task(_run())
-    logger.info(f"Started periodic fetch every {interval_minutes} minutes")
-
-
-async def _fetch_all_feeds():
-    """Fetch all feeds in the background."""
+    Designed to be called by APScheduler or triggered manually.
+    Opens its own database session.
+    """
     from app.database import async_session
     async with async_session() as db:
         try:

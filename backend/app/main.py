@@ -7,8 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db, seed_default_settings
-from app.routes import settings, groups, feeds, articles, tags, summary, briefing, export, stats, scheduled_tasks
-from app.services.feed_fetcher import start_periodic_fetch
+from app.routes import settings, groups, feeds, articles, tags, summary, briefing, export, stats, scheduled_tasks, feed_fetch
 from app.services.task_scheduler import scheduler as briefing_scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -22,7 +21,6 @@ async def lifespan(app: FastAPI):
     await init_db()
     await seed_default_settings()
     logger.info("Database initialized successfully")
-    await start_periodic_fetch(interval_minutes=30)
     await briefing_scheduler.start()
     yield
     logger.info("Shutting down...")
@@ -50,6 +48,9 @@ app.add_middleware(
 )
 
 # Register routers
+# NOTE: feed_fetch must be BEFORE "feeds" to avoid its /{feed_id} catching
+# paths like /fetch-status as an int feed_id (causing 422).
+app.include_router(feed_fetch.router)
 app.include_router(settings.router)
 app.include_router(groups.router)
 app.include_router(feeds.router)

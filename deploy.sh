@@ -464,9 +464,6 @@ stopwaitsecs=10
 stopasgroup=true
 killasgroup=true
 
-; 内存限制（防止 OOM）
-minfds=1024
-
 ; 环境变量
 environment=
     HOST="0.0.0.0",
