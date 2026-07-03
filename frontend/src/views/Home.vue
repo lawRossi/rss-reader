@@ -44,6 +44,12 @@
             添加订阅源
           </router-link>
         </div>
+
+        <!-- Infinite scroll sentinel -->
+        <div v-if="articles.length > 0" ref="sentinelRef" class="flex justify-center py-6">
+          <span v-if="loadingMore" class="text-sm text-[var(--color-text-secondary)]">加载中...</span>
+          <span v-else-if="!hasMore" class="text-sm text-[var(--color-text-secondary)]">— 已加载全部文章 —</span>
+        </div>
       </div>
     </div>
   </div>
@@ -54,6 +60,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useArticleStore } from '../stores/articleStore'
 import { useFeedStore } from '../stores/feedStore'
 import { statsApi } from '../api'
+import { useInfiniteScroll } from '../composables/useInfiniteScroll'
 import ArticleCard from '../components/ArticleCard.vue'
 
 const articleStore = useArticleStore()
@@ -62,6 +69,13 @@ const feedStore = useFeedStore()
 const articles = computed(() => articleStore.articles)
 const loading = computed(() => articleStore.loading)
 const feedCount = computed(() => feedStore.feeds.length)
+
+// Infinite scroll
+const { sentinelRef, hasMore, loadingMore } = useInfiniteScroll(
+  articleStore.loadMore,
+  computed(() => articleStore.total),
+  computed(() => articleStore.articles.length),
+)
 
 // Local loading guard to prevent flash of stale data from other pages
 const pageLoading = ref(true)

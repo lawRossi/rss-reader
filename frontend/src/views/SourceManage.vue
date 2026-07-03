@@ -42,7 +42,9 @@
     <div v-else class="space-y-4">
       <div v-for="item in feedStore.feedsByGroup" :key="item.group.id" class="bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)] overflow-hidden">
         <div class="px-4 py-3 flex items-center justify-between border-b border-[var(--color-border)]">
-          <h3 class="font-semibold text-[var(--color-text)]">{{ item.group.name }}</h3>
+          <router-link :to="`/group/${item.group.id}`" class="font-semibold text-[var(--color-text)] hover:text-[var(--color-primary)] transition-colors">
+            {{ item.group.name }}
+          </router-link>
           <div class="flex items-center gap-2">
             <span class="text-sm text-[var(--color-text-secondary)]">{{ item.feeds.length }} 个源</span>
             <button v-if="item.group.id !== 0" @click="deleteGroup(item.group.id)"
