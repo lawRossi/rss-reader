@@ -339,6 +339,8 @@ class MossTTSNanoBackend(TTSBackend):
         )
         logger.info(f"Synthesizing {len(chunks)} chunk(s), {len(clean_text)} chars total")
 
+        CHUNK_TIMEOUT = 1200  # 20 minutes per chunk max
+
         for i, chunk_text in enumerate(chunks):
             logger.info(f"Chunk {i + 1}/{len(chunks)} ({len(chunk_text)} chars)...")
 
@@ -349,10 +351,21 @@ class MossTTSNanoBackend(TTSBackend):
                 )
                 return result["waveform"]
 
-            waveform = await loop.run_in_executor(self._get_executor(), _synthesize_chunk)
+            try:
+                waveform = await asyncio.wait_for(
+                    loop.run_in_executor(self._get_executor(), _synthesize_chunk),
+                    timeout=CHUNK_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Chunk %d/%d timed out after %ds",
+                    i + 1, len(chunks), CHUNK_TIMEOUT,
+                )
+                continue
+
             if waveform is None or waveform.size == 0:
                 logger.error(f"Chunk {i + 1}/{len(chunks)} failed (empty waveform)")
-                return
+                continue
 
             yield (np.asarray(waveform, dtype=np.float32), sample_rate)
 
@@ -370,12 +383,14 @@ class MossTTSNanoBackend(TTSBackend):
             db: Database session.
             ref_audio_id: Override reference audio ID; None = use globally active one.
         """
+        import os
         import soundfile as sf
 
         try:
             first = True
             output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
+            sf_file = None
 
             async for audio_data, sample_rate in self._synthesize_text(text, db, ref_audio_id=ref_audio_id):
                 audio_data = np.asarray(audio_data, dtype=np.float32)
@@ -397,12 +412,33 @@ class MossTTSNanoBackend(TTSBackend):
                 logger.error("No audio chunks generated")
                 return False
 
-            sf_file.close()
-            logger.info(f"Audio saved (streaming): {output_path}")
+            if sf_file:
+                sf_file.flush()
+                sf_file.close()
+                # fsync file to disk — critical before potential OOM kill
+                try:
+                    fd = os.open(str(output_path), os.O_RDONLY)
+                    os.fsync(fd)
+                    os.close(fd)
+                except OSError:
+                    pass
+            logger.info("Audio saved (streaming): %s", output_path)
+            # Flush all logging handlers so the "saved" message is on disk
+            for handler in logging.getLogger().handlers:
+                handler.flush()
             return True
 
-        except Exception as e:
-            logger.error(f"MOSS-TTS-Nano ONNX streaming generation error: {e}")
+        except BaseException as e:
+            logger.error("Audio generation failed: %s", e, exc_info=True)
+            # Try to close the file if it was opened (partial data)
+            if sf_file is not None:
+                try:
+                    sf_file.flush()
+                    sf_file.close()
+                except Exception:
+                    pass
+            for handler in logging.getLogger().handlers:
+                handler.flush()
             return False
 
     async def generate_audio_streaming(self, text: str, db: AsyncSession,
@@ -441,6 +477,8 @@ class MossTTSNanoBackend(TTSBackend):
         total = len(chunks)
         logger.info(f"Streaming {total} chunk(s), {len(clean_text)} chars total")
 
+        CHUNK_TIMEOUT = 1200  # 20 minutes per chunk max
+
         for i, chunk_text in enumerate(chunks):
             logger.info(f"Streaming chunk {i + 1}/{total} ({len(chunk_text)} chars)...")
 
@@ -451,7 +489,18 @@ class MossTTSNanoBackend(TTSBackend):
                 )
                 return result["waveform"]
 
-            waveform = await loop.run_in_executor(self._get_executor(), _synthesize_chunk)
+            try:
+                waveform = await asyncio.wait_for(
+                    loop.run_in_executor(self._get_executor(), _synthesize_chunk),
+                    timeout=CHUNK_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Streaming chunk %d/%d timed out after %ds",
+                    i + 1, total, CHUNK_TIMEOUT,
+                )
+                continue
+
             if waveform is None or waveform.size == 0:
                 logger.error(f"Streaming chunk {i + 1}/{total} failed (empty waveform)")
                 continue

@@ -124,6 +124,7 @@ async def _run_generation(
             first = True
             sf_file: sf.SoundFile | None = None
             total = 0
+            chunks_yielded = 0
 
             # Use a fresh DB session (the endpoint's session may be closed
             # by the time this background task runs)
@@ -145,6 +146,7 @@ async def _run_generation(
                     # Write to temp file (no in-memory accumulation ✓)
                     write_arr = audio_np.reshape(-1, 1) if audio_np.ndim == 1 else audio_np
                     sf_file.write(write_arr)
+                    chunks_yielded += 1
 
                     # Put chunk in queue for SSE consumers
                     await queue.put({
@@ -155,20 +157,36 @@ async def _run_generation(
                         "audio_base64": base64.b64encode(audio_bytes).decode("utf-8"),
                     })
 
+            logger.info(
+                "nano generation loop ended: chunks_yielded=%s, sf_file=%s",
+                chunks_yielded, sf_file is not None,
+            )
+
             # ── Atomically persist the audio file ──
             if sf_file:
-                # 1. flush & close (may raise on e.g. disk full)
+                logger.info("Flushing soundfile...")
                 sf_file.flush()
+                logger.info("Closing soundfile...")
                 sf_file.close()
+                logger.info("Soundfile closed, size=%s", temp_path.stat().st_size if temp_path.exists() else "N/A")
 
             # 2. Only rename if the temp file exists and has content
             file_saved = False
-            if temp_path and temp_path.exists() and temp_path.stat().st_size > 44:  # > WAV header
-                temp_path.rename(final_path)
-                audio_path = str(final_path.relative_to(AUDIO_DIR))
-                file_saved = True
+            if temp_path and temp_path.exists():
+                fsize = temp_path.stat().st_size
+                logger.info("Temp file exists, size=%s", fsize)
+                if fsize > 44:  # > WAV header
+                    logger.info("Renaming %s → %s", temp_path.name, final_path.name)
+                    temp_path.rename(final_path)
+                    audio_path = str(final_path.relative_to(AUDIO_DIR))
+                    file_saved = True
+                else:
+                    logger.warning("Temp file too small (%s bytes), treating as failed", fsize)
+            else:
+                logger.warning("Temp file does not exist after generation loop")
 
             if file_saved:
+                logger.info("Updating DB with audio_path=%s", audio_path)
                 async with async_session() as bg_db:
                     b = await bg_db.get(DailyBriefing, briefing_id)
                     if b:
