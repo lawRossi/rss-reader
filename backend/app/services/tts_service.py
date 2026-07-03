@@ -339,7 +339,7 @@ class MossTTSNanoBackend(TTSBackend):
         )
         logger.info(f"Synthesizing {len(chunks)} chunk(s), {len(clean_text)} chars total")
 
-        CHUNK_TIMEOUT = 1200  # 20 minutes per chunk max
+        CHUNK_TIMEOUT = 180  # 20 minutes per chunk max
 
         for i, chunk_text in enumerate(chunks):
             logger.info(f"Chunk {i + 1}/{len(chunks)} ({len(chunk_text)} chars)...")

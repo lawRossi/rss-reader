@@ -48,11 +48,14 @@
 
         <!-- Audio Player / Stream -->
         <div class="mt-4 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+          <!-- Hidden audio element used by both streaming and standard playback -->
+          <audio ref="audioEl" :src="audioUrl" @timeupdate="onTimeUpdate" @loadedmetadata="onLoaded" @ended="onEnded" class="hidden"></audio>
+
           <!-- Streaming in progress -->
           <div v-if="streamState === 'connecting'" class="text-center text-sm text-[var(--color-text-secondary)]">
             <span class="inline-block animate-pulse">🔌 正在连接音频流...</span>
           </div>
-          <div v-else-if="streamState === 'streaming'" class="flex items-center gap-4">
+          <div v-else-if="streamState === 'streaming' || (streamDonePending && playing && !fullAudioReady)" class="flex items-center gap-4">
             <button @click="togglePlay" class="w-12 h-12 rounded-full bg-[var(--color-primary)] text-white flex items-center justify-center text-xl hover:bg-[var(--color-primary-dark)] shrink-0">
               {{ playing ? '⏸' : '▶️' }}
             </button>
@@ -68,7 +71,6 @@
           </div>
           <!-- Standard player (audio file ready) -->
           <div v-else-if="briefing.audio_path" class="flex items-center gap-4">
-            <audio ref="audioEl" :src="audioUrl" @timeupdate="onTimeUpdate" @loadedmetadata="onLoaded" class="hidden"></audio>
             <button @click="togglePlay" class="w-12 h-12 rounded-full bg-[var(--color-primary)] text-white flex items-center justify-center text-xl hover:bg-[var(--color-primary-dark)] shrink-0">
               {{ playing ? '⏸' : '▶️' }}
             </button>
@@ -162,12 +164,16 @@ const refAudioLabel = computed(() => {
 const streamState = ref('idle') // 'idle' | 'connecting' | 'streaming' | 'done' | 'error'
 const streamChunksReceived = ref(0)
 const streamTotalChunks = ref(0)
-const streamDonePending = ref(false) // true: all chunks received, AudioContext still playing
+const streamDonePending = ref(false) // true: all chunks received, playing from partial blob
 const ttsEngineName = ref('')
 let eventSource = null
-let audioContext = null
-let scheduledTime = 0
-let progressInterval = null
+
+// WAV Blob playback (replaces Web Audio API — iOS doesn't play AudioContext reliably)
+let rawPcmBuffers = []         // {float32: Float32Array, sampleRate: number}[]
+let rawPcmTotalSamples = 0     // total float32 samples accumulated
+let estimatedDuration = 0
+let partialBlobUrl = null      // object URL for partial playback
+let fullAudioReady = false     // true when saved .wav file is available
 
 // Detect engine type from script content
 const isDialogue = computed(() => {
@@ -233,6 +239,95 @@ onUnmounted(() => {
   }
 })
 
+function stopStreaming() {
+  if (eventSource) {
+    eventSource.close()
+    eventSource = null
+  }
+  streamDonePending.value = false
+  fullAudioReady = false
+  revokePartialBlob()
+  rawPcmBuffers = []
+  rawPcmTotalSamples = 0
+  estimatedDuration = 0
+  if (audioEl.value) {
+    audioEl.value.pause()
+    audioEl.value.currentTime = 0
+  }
+}
+
+function revokePartialBlob() {
+  if (partialBlobUrl) {
+    URL.revokeObjectURL(partialBlobUrl)
+    partialBlobUrl = null
+  }
+}
+
+/**
+ * Convert accumulated raw PCM float32 data to a WAV Blob.
+ * Uses the sample rate from the first chunk (all chunks share the same rate).
+ */
+function buildWavBlob() {
+  if (rawPcmBuffers.length === 0 || rawPcmTotalSamples === 0) return null
+
+  const sampleRate = rawPcmBuffers[0].sampleRate
+  const numChannels = 1
+  const bitsPerSample = 16
+  const bytesPerSample = bitsPerSample / 8
+  const dataSize = rawPcmTotalSamples * bytesPerSample
+  const bufferSize = 44 + dataSize
+
+  const arrayBuffer = new ArrayBuffer(bufferSize)
+  const view = new DataView(arrayBuffer)
+
+  // WAV header
+  writeString(view, 0, 'RIFF')
+  view.setUint32(4, bufferSize - 8, true)
+  writeString(view, 8, 'WAVE')
+  writeString(view, 12, 'fmt ')
+  view.setUint32(16, 16, true) // PCM
+  view.setUint16(20, 1, true) // format = 1 (PCM)
+  view.setUint16(22, numChannels, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * numChannels * bytesPerSample, true) // byte rate
+  view.setUint16(32, numChannels * bytesPerSample, true) // block align
+  view.setUint16(34, bitsPerSample, true)
+  writeString(view, 36, 'data')
+  view.setUint32(40, dataSize, true)
+
+  // Interleave & write PCM16 samples
+  let offset = 44
+  for (const chunk of rawPcmBuffers) {
+    const arr = chunk.float32
+    for (let i = 0; i < arr.length; i++) {
+      const s = Math.max(-1, Math.min(1, arr[i]))
+      const intSample = s < 0 ? s * 0x8000 : s * 0x7FFF
+      view.setInt16(offset, intSample, true)
+      offset += 2
+    }
+  }
+
+  return new Blob([arrayBuffer], { type: 'audio/wav' })
+}
+
+function writeString(view, offset, str) {
+  for (let i = 0; i < str.length; i++) {
+    view.setUint8(offset + i, str.charCodeAt(i))
+  }
+}
+
+/**
+ * Decode base64-encoded float32 PCM bytes → Float32Array.
+ */
+function decodePcmChunk(audioBase64) {
+  const binaryStr = atob(audioBase64)
+  const bytes = new Uint8Array(binaryStr.length)
+  for (let i = 0; i < binaryStr.length; i++) {
+    bytes[i] = binaryStr.charCodeAt(i)
+  }
+  return new Float32Array(bytes.buffer)
+}
+
 // ─── Streaming ───
 
 function startStreaming(briefingId) {
@@ -252,10 +347,9 @@ function startStreaming(briefingId) {
       if (data.type === 'chunk') {
         streamChunksReceived.value = data.index + 1
         streamTotalChunks.value = data.total
-        playAudioChunk(data.audio_base64, data.sample_rate)
-      } else       if (data.type === 'done') {
-        // Streaming logically complete — don't close AudioContext yet,
-        // let it finish playing the already-scheduled chunks naturally.
+        bufferAudioChunk(data.audio_base64, data.sample_rate)
+      } else if (data.type === 'done') {
+        // All chunks received.
         streamDonePending.value = true
         eventSource.close()
         eventSource = null
@@ -267,15 +361,30 @@ function startStreaming(briefingId) {
           audioUrl.value = briefingsApi.getAudio(briefing.value.id)
         }
         showToast('音频已生成', 'success')
+
+        // If user hasn't clicked play yet, switch to standard audio player
+        if (!playing.value && rawPcmBuffers.length > 0) {
+          streamState.value = 'done'
+          rawPcmBuffers = []
+          rawPcmTotalSamples = 0
+          estimatedDuration = 0
+        }
+
+        // If user was playing from a partial blob, switch to full saved file
+        if (playing.value && partialBlobUrl && data.audio_path) {
+          fullAudioReady = true
+          // Helper: transition from partial blob to full file
+          transitionToFullAudio()
+        }
       } else if (data.type === 'error') {
         streamState.value = 'error'
         showToast(data.message || '音频生成失败', 'error')
         eventSource.close()
         eventSource = null
-        if (progressInterval) {
-          clearInterval(progressInterval)
-          progressInterval = null
-        }
+        revokePartialBlob()
+        rawPcmBuffers = []
+        rawPcmTotalSamples = 0
+        estimatedDuration = 0
       }
     } catch (e) {
       console.error('Failed to parse SSE event:', e)
@@ -288,88 +397,68 @@ function startStreaming(briefingId) {
   }
 }
 
-function stopStreaming() {
-  if (eventSource) {
-    eventSource.close()
-    eventSource = null
-  }
-  streamDonePending.value = false
-  if (audioContext) {
-    audioContext.close().catch(() => {})
-    audioContext = null
-  }
-  if (progressInterval) {
-    clearInterval(progressInterval)
-    progressInterval = null
+/**
+ * Buffer an incoming audio chunk.
+ * Raw PCM data is accumulated; no AudioContext is involved.
+ * When user clicks play, the accumulated buffer is converted to a WAV Blob
+ * and played via the standard <audio> element (works reliably on iOS).
+ */
+function bufferAudioChunk(audioBase64, sampleRate) {
+  const float32 = decodePcmChunk(audioBase64)
+  rawPcmBuffers.push({ float32, sampleRate })
+  rawPcmTotalSamples += float32.length
+  const chunkDuration = float32.length / sampleRate
+  estimatedDuration += chunkDuration
+
+  // Update progress bar estimate
+  duration.value = estimatedDuration
+}
+
+/**
+ * Play all accumulated PCM data as a WAV Blob via the standard <audio> element.
+ * Called on user gesture (click play) — works on iOS because the <audio>
+ * element handles playback natively, no AudioContext restrictions.
+ */
+function playAccumulatedAudio() {
+  if (rawPcmBuffers.length === 0 || rawPcmTotalSamples === 0) return
+
+  const blob = buildWavBlob()
+  if (!blob) return
+
+  revokePartialBlob()
+  partialBlobUrl = URL.createObjectURL(blob)
+
+  if (audioEl.value) {
+    audioEl.value.src = partialBlobUrl
+    audioEl.value.play()
+    playing.value = true
   }
 }
 
-function playAudioChunk(audioBase64, sampleRate) {
-  // Create/resume AudioContext on first chunk
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)()
-    scheduledTime = audioContext.currentTime
+/**
+ * Transition from partial WAV Blob playback to the full saved audio file.
+ * Called when streaming finishes and we were playing from a partial blob.
+ */
+function transitionToFullAudio() {
+  if (!audioEl.value || !audioUrl.value) return
+
+  // Save current playback position
+  const currentPos = audioEl.value.currentTime
+
+  // Switch to full file
+  revokePartialBlob()
+  audioEl.value.src = audioUrl.value
+  audioEl.value.currentTime = currentPos
+
+  // If user was still playing, continue
+  if (playing.value) {
+    audioEl.value.play()
   }
-  if (audioContext.state === 'suspended') {
-    audioContext.resume()
-  }
 
-  // Decode base64 → PCM float32 bytes → Float32Array
-  const binaryStr = atob(audioBase64)
-  const bytes = new Uint8Array(binaryStr.length)
-  for (let i = 0; i < binaryStr.length; i++) {
-    bytes[i] = binaryStr.charCodeAt(i)
-  }
-  const float32Array = new Float32Array(bytes.buffer)
-
-  // Create AudioBuffer for this chunk
-  const buffer = audioContext.createBuffer(1, float32Array.length, sampleRate)
-  buffer.getChannelData(0).set(float32Array)
-
-  // Schedule playback immediately (seamless concatenation)
-  const source = audioContext.createBufferSource()
-  source.buffer = buffer
-  source.connect(audioContext.destination)
-  source.start(scheduledTime)
-
-  const chunkDuration = float32Array.length / sampleRate
-  scheduledTime += chunkDuration
-
-  // Update UI
-  if (!playing.value) {
-    playing.value = true
-  }
-  duration.value = scheduledTime
-
-  // Track progress
-  if (!progressInterval) {
-    progressInterval = setInterval(() => {
-      // Check if AudioContext has finished playing all scheduled chunks
-      if (streamDonePending.value && audioContext && scheduledTime > 0) {
-        if (audioContext.currentTime >= scheduledTime) {
-          // All chunks finished — clean up and switch to done state
-          audioContext.close().catch(() => {})
-          audioContext = null
-          streamDonePending.value = false
-          streamState.value = 'done'
-          playing.value = false
-          currentTime.value = 0
-          progress.value = 0
-          clearInterval(progressInterval)
-          progressInterval = null
-          return
-        }
-      }
-      // Normal progress update
-      if (audioContext && playing.value) {
-        const elapsed = audioContext.currentTime
-        currentTime.value = elapsed
-        if (scheduledTime > 0) {
-          progress.value = Math.min((elapsed / scheduledTime) * 100, 100)
-        }
-      }
-    }, 250)
-  }
+  streamState.value = 'done'
+  rawPcmBuffers = []
+  rawPcmTotalSamples = 0
+  estimatedDuration = 0
 }
 
 // ─── CRUD & Playback ───
@@ -388,21 +477,23 @@ async function confirmDelete() {
 }
 
 function togglePlay() {
-  if (streamState.value === 'streaming') {
-    // Toggle AudioContext during streaming
-    if (audioContext) {
-      if (audioContext.state === 'suspended') {
-        audioContext.resume()
-        playing.value = true
-      } else {
-        audioContext.suspend()
+  if (streamState.value === 'streaming' || (streamDonePending.value && !fullAudioReady)) {
+    if (playing.value) {
+      // Pause <audio> element
+      if (audioEl.value) {
+        audioEl.value.pause()
         playing.value = false
       }
+    } else {
+      // Play: convert accumulated PCM to WAV Blob and play via <audio> element.
+      // This works on iOS because <audio> uses the native audio pipeline,
+      // not Web Audio API (which has strict user-gesture restrictions on iOS).
+      playAccumulatedAudio()
     }
     return
   }
 
-  // Standard <audio> element playback
+  // Standard <audio> element playback (full saved file)
   if (!audioEl.value) return
   if (playing.value) {
     audioEl.value.pause()
@@ -410,6 +501,16 @@ function togglePlay() {
     audioEl.value.play()
   }
   playing.value = !playing.value
+}
+
+function onEnded() {
+  playing.value = false
+  currentTime.value = 0
+  progress.value = 0
+  // If we were playing from a partial blob and full audio is ready, switch
+  if (fullAudioReady && audioUrl.value) {
+    transitionToFullAudio()
+  }
 }
 
 async function regenerateAudio() {
@@ -420,6 +521,7 @@ async function regenerateAudio() {
     briefing.value.audio_path = null
     briefing.value.status = 'completed'
     audioUrl.value = ''
+    fullAudioReady = false
     showToast('音频已重置，开始重新生成...', 'success')
     // Start streaming
     startStreaming(briefing.value.id)
@@ -440,8 +542,7 @@ function onLoaded() {
 }
 
 function seek(e) {
-  if (streamState.value === 'streaming') return // Can't seek during live stream
-  if (!audioEl.value) return
+  if (!audioEl.value || !duration.value) return
   const rect = e.currentTarget.getBoundingClientRect()
   const pos = (e.clientX - rect.left) / rect.width
   audioEl.value.currentTime = pos * duration.value
