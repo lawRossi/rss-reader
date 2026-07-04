@@ -620,7 +620,7 @@ function bufferAudioChunk(audioBase64, sampleRate) {
  * Called on user gesture (click play) — works on iOS because the <audio>
  * element handles playback natively, no AudioContext restrictions.
  */
-function playAccumulatedAudio() {
+function playAccumulatedAudio(resumeTime) {
   if (rawPcmBuffers.length === 0 || rawPcmTotalSamples === 0) return
 
   const blob = buildWavBlob()
@@ -634,26 +634,23 @@ function playAccumulatedAudio() {
     audioEl.value.play()
     playing.value = true
 
-    // If there's a pending restore position (from a previous visit during streaming),
-    // seek to it once the blob's metadata is loaded.
-    if (pendingRestoreTime !== null) {
-      const targetTime = pendingRestoreTime
-      pendingRestoreTime = null  // consume once
-      if (audioEl.value) {
-        const doSeek = () => {
-          if (!audioEl.value) return
-          const dur = audioEl.value.duration
-          if (dur && dur > 0 && isFinite(dur) && targetTime < dur - 1) {
-            audioEl.value.currentTime = targetTime
-            currentTime.value = targetTime
-            console.log(`[Progress] Stream blob seeked to ${targetTime.toFixed(1)}s`)
-          }
+    // After setting src, seek to the appropriate position
+    const targetTime = resumeTime !== undefined ? resumeTime : (pendingRestoreTime !== null ? pendingRestoreTime : null)
+    if (targetTime !== null && targetTime > 0) {
+      if (targetTime === pendingRestoreTime) pendingRestoreTime = null  // consume once
+      const doSeek = () => {
+        if (!audioEl.value) return
+        const dur = audioEl.value.duration
+        if (dur && dur > 0 && isFinite(dur) && targetTime < dur - 1) {
+          audioEl.value.currentTime = targetTime
+          currentTime.value = targetTime
+          console.log(`[Progress] Stream blob seeked to ${targetTime.toFixed(1)}s`)
         }
-        if (audioEl.value.readyState >= HTMLMediaElement.HAVE_METADATA) {
-          doSeek()
-        } else {
-          audioEl.value.addEventListener('loadedmetadata', doSeek, { once: true })
-        }
+      }
+      if (audioEl.value.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        doSeek()
+      } else {
+        audioEl.value.addEventListener('loadedmetadata', doSeek, { once: true })
       }
     }
   }
@@ -729,10 +726,10 @@ function togglePlay() {
         playing.value = false
       }
     } else {
-      // Play: convert accumulated PCM to WAV Blob and play via <audio> element.
-      // This works on iOS because <audio> uses the native audio pipeline,
-      // not Web Audio API (which has strict user-gesture restrictions on iOS).
-      playAccumulatedAudio()
+      // Play or resume: always rebuild the blob (may have new chunks since last play),
+      // but preserve the current playback position across the src reset.
+      const prevTime = audioEl.value?.currentTime || 0
+      playAccumulatedAudio(prevTime)
     }
     return
   }
