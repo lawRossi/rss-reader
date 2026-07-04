@@ -12,8 +12,8 @@ from sqlalchemy import select
 
 from app.database import get_db, async_session
 from app.models import Setting
-from app.schemas import SettingOut, SettingsUpdate, TtsEngineOptions
-from app.config import TTS_ENGINE_OPTIONS, AUDIO_DIR
+from app.schemas import SettingOut, SettingsUpdate
+from app.config import AUDIO_DIR
 from app.services.task_scheduler import scheduler
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
@@ -96,10 +96,17 @@ async def update_settings(update: SettingsUpdate, db: AsyncSession = Depends(get
     return result.scalars().all()
 
 
-@router.get("/tts-engines", response_model=TtsEngineOptions)
+@router.get("/tts-engines")
 async def get_tts_engine_options():
-    """Get available TTS engine options."""
-    return TtsEngineOptions(engines=TTS_ENGINE_OPTIONS)
+    """Get available TTS engines (simplified — nano only)."""
+    return {
+        "engines": {
+            "moss-tts-nano": {
+                "label": "MOSS-TTS-Nano (音色克隆)",
+                "description": "基于参考音频克隆音色，单人播报",
+            }
+        }
+    }
 
 
 # ─── Multiple Reference Audios API ───

@@ -38,7 +38,7 @@
               🗑️
             </button>
             <!-- Regenerate audio button -->
-            <button @click="regenerateAudio" v-if="briefing.audio_path || streamState === 'done'"
+            <button @click="regenerateAudio" v-if="briefing.audio_path || streamState === 'done' || streamState === 'error' || briefing.status === 'failed'"
               class="p-2 rounded-lg text-[var(--color-text-secondary)] hover:bg-amber-50 dark:hover:bg-amber-900/20 hover:text-amber-500 transition-all"
               title="重新生成音频">
               🔄
@@ -49,7 +49,7 @@
         <!-- Audio Player / Stream -->
         <div class="mt-4 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
           <!-- Hidden audio element used by both streaming and standard playback -->
-          <audio ref="audioEl" :src="audioUrl" @timeupdate="onTimeUpdate" @loadedmetadata="onLoaded" @ended="onEnded" class="hidden"></audio>
+          <audio ref="audioEl" :src="audioUrl" @timeupdate="onTimeUpdate" @loadedmetadata="onLoaded" @ended="onEnded" preload="auto" class="hidden"></audio>
 
           <!-- Streaming in progress -->
           <div v-if="streamState === 'connecting'" class="text-center text-sm text-[var(--color-text-secondary)]">
@@ -130,7 +130,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, inject } from 'vue'
+import { ref, computed, onMounted, onUnmounted, inject, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBriefingStore } from '../stores/briefingStore'
 import { briefingsApi } from '../api'
@@ -175,6 +175,133 @@ let estimatedDuration = 0
 let partialBlobUrl = null      // object URL for partial playback
 let fullAudioReady = false     // true when saved .wav file is available
 
+// ── Playback progress persistence (localStorage) ──
+// Stores both absolute time AND ratio (currentTime / duration).
+// On restore, try absolute first; if the audio duration differs (e.g. re-generated),
+// fall back to ratio to preserve position in content.
+const PROGRESS_PREFIX = 'briefing_progress_'
+const PROGRESS_TTL = 24 * 60 * 60 * 1000  // 24 hours
+let progressSaveInterval = null
+let progressRetryTimer = null
+let suppressProgressSave = false  // prevents overwriting saved position during src transitions
+let pendingRestoreTime = null     // used during streaming: seek after WAV blob is built
+
+function saveProgress() {
+  if (suppressProgressSave) return  // skip during audio src transitions
+  if (!briefing.value?.id || !audioEl.value?.duration) return
+  if (audioEl.value.duration <= 0) return
+  const currentTime = audioEl.value.currentTime
+  const duration = audioEl.value.duration
+  const key = PROGRESS_PREFIX + briefing.value.id
+
+  // Guard: if currentTime is near 0 (< 0.5s), the audio src was likely just
+  // changed/reset. Don't overwrite a valid position with 0.
+  if (currentTime < 0.5) {
+    try {
+      const prevRaw = localStorage.getItem(key)
+      if (prevRaw) {
+        const prev = JSON.parse(prevRaw)
+        if (prev.currentTime >= 1 && prev.ratio > 0) {
+          console.log(`[Progress] SKIPPED (currentTime=${currentTime.toFixed(1)}s too small, keeping ${prev.currentTime.toFixed(1)}s)`)
+          return
+        }
+      }
+    } catch (_) {}
+  }
+
+  const data = {
+    currentTime,
+    duration,
+    ratio: duration > 0 ? currentTime / duration : 0,
+    updatedAt: Date.now()
+  }
+  try {
+    localStorage.setItem(key, JSON.stringify(data))
+    console.log(`[Progress] SAVED briefing=${briefing.value.id} currentTime=${currentTime.toFixed(1)}s duration=${duration.toFixed(1)}s ratio=${data.ratio.toFixed(4)}`)
+  } catch (_) {}
+}
+
+function loadProgress() {
+  if (!briefing.value?.id) return null
+  try {
+    const raw = localStorage.getItem(PROGRESS_PREFIX + briefing.value.id)
+    if (!raw) return null
+    const data = JSON.parse(raw)
+    // Expired
+    if (Date.now() - data.updatedAt > PROGRESS_TTL) {
+      localStorage.removeItem(PROGRESS_PREFIX + briefing.value.id)
+      console.log(`[Progress] EXPIRED briefing=${briefing.value.id}`)
+      return null
+    }
+    // Nearly finished — treat as complete
+    if (data.duration > 0 && data.currentTime >= data.duration - 1) {
+      localStorage.removeItem(PROGRESS_PREFIX + briefing.value.id)
+      console.log(`[Progress] CLEARED (near end) briefing=${briefing.value.id}`)
+      return null
+    }
+    console.log(`[Progress] LOADED briefing=${briefing.value.id} currentTime=${data.currentTime?.toFixed(1)}s duration=${data.duration?.toFixed(1)}s ratio=${data.ratio?.toFixed(4)}`)
+    return data
+  } catch (_) {
+    return null
+  }
+}
+
+function clearProgress() {
+  if (briefing.value?.id) {
+    try {
+      localStorage.removeItem(PROGRESS_PREFIX + briefing.value.id)
+    } catch (_) {}
+  }
+}
+
+/**
+ * Restore saved playback progress on the <audio> element.
+ * Tries absolute time first; if the audio duration changed, falls back to ratio.
+ * Retries periodically until the audio metadata is loaded.
+ */
+function restoreProgress(saved) {
+  if (!saved || !audioEl.value) return
+  console.log(`[Progress] RESTORE attempt: saved.ct=${saved.currentTime?.toFixed(1)}s`)
+
+  let attempts = 0
+  const maxAttempts = 30
+
+  const tryRestore = () => {
+    if (!audioEl.value) return false
+    const el = audioEl.value
+    const dur = el.duration
+    if (!dur || dur <= 0 || !isFinite(dur)) return false
+
+    let targetTime = null
+
+    // Strategy 1: absolute time (same audio file)
+    if (saved.currentTime < dur - 1) {
+      targetTime = saved.currentTime
+    } else {
+      // Strategy 2: ratio-based (audio duration changed)
+      const t = saved.ratio * dur
+      if (t < dur - 1 && t > 0) targetTime = t
+    }
+
+    if (targetTime !== null) {
+      el.currentTime = targetTime
+      currentTime.value = targetTime
+      console.log(`[Progress] RESTORED ${targetTime.toFixed(1)}s / ${dur.toFixed(1)}s`)
+      return true
+    }
+    return false
+  }
+
+  if (tryRestore()) return
+
+  const poll = () => {
+    if (tryRestore() || attempts >= maxAttempts) return
+    attempts++
+    progressRetryTimer = setTimeout(poll, 300)
+  }
+  progressRetryTimer = setTimeout(poll, 300)
+}
+
 // Detect engine type from script content
 const isDialogue = computed(() => {
   if (!briefing.value?.script_text) return false
@@ -210,12 +337,28 @@ onMounted(async () => {
   const data = await briefingStore.getBriefing(route.params.id)
   briefing.value = data
 
+  // Must set loading=false AND await nextTick BEFORE accessing audioEl ref,
+  // because <audio> is inside v-else-if="briefing" inside v-if="loading".
+  loading.value = false
+  await nextTick()
+
   if (data.audio_path) {
-    // Audio file already exists — play directly
+    // ── Audio file already exists — load the full file ──
     audioUrl.value = briefingsApi.getAudio(data.id)
+    // Restore saved playback progress
+    const saved = loadProgress()
+    if (saved) {
+      restoreProgress(saved)
+    }
   } else if (data.script_text && data.script_text !== '暂无新闻更新。' && data.status !== 'failed') {
-    // Script is ready but no audio yet — start streaming immediately
+    // ── Script is ready but no audio yet — start streaming ──
     startStreaming(data.id)
+    // Save target position for later restore when WAV blob is played
+    const saved = loadProgress()
+    if (saved) {
+      pendingRestoreTime = saved.currentTime
+      console.log(`[Progress] Streaming: will restore to ${pendingRestoreTime.toFixed(1)}s when blob is ready`)
+    }
   }
 
   // Check current TTS config for voice info display
@@ -229,9 +372,23 @@ onMounted(async () => {
     refAudios.value = res.data.audios || []
   } catch (_) {}
   loading.value = false
+
+  // ── Progress persistence setup ──
+  window.addEventListener('beforeunload', saveProgress)
+  progressSaveInterval = setInterval(saveProgress, 10000)  // every 10s
 })
 
 onUnmounted(() => {
+  saveProgress()
+  window.removeEventListener('beforeunload', saveProgress)
+  if (progressSaveInterval) {
+    clearInterval(progressSaveInterval)
+    progressSaveInterval = null
+  }
+  if (progressRetryTimer) {
+    clearTimeout(progressRetryTimer)
+    progressRetryTimer = null
+  }
   stopStreaming()
   if (audioEl.value) {
     audioEl.value.pause()
@@ -246,6 +403,7 @@ function stopStreaming() {
   }
   streamDonePending.value = false
   fullAudioReady = false
+  pendingRestoreTime = null
   revokePartialBlob()
   rawPcmBuffers = []
   rawPcmTotalSamples = 0
@@ -349,34 +507,65 @@ function startStreaming(briefingId) {
         streamTotalChunks.value = data.total
         bufferAudioChunk(data.audio_base64, data.sample_rate)
       } else if (data.type === 'done') {
+        // ── Suppress progress saves immediately, before any src change ──
+        suppressProgressSave = true
+
         // All chunks received.
         streamDonePending.value = true
         eventSource.close()
         eventSource = null
 
-        // Update briefing with the saved audio path for later replay
+        // Save the audio path info
         if (data.audio_path && briefing.value) {
           briefing.value.audio_path = data.audio_path
           briefing.value.status = 'completed'
-          audioUrl.value = briefingsApi.getAudio(briefing.value.id)
         }
         showToast('音频已生成', 'success')
 
-        // If user hasn't clicked play yet, switch to standard audio player
-        if (!playing.value && rawPcmBuffers.length > 0) {
-          streamState.value = 'done'
-          rawPcmBuffers = []
-          rawPcmTotalSamples = 0
-          estimatedDuration = 0
-        }
-
         // If user was playing from a partial blob, switch to full saved file
-        if (playing.value && partialBlobUrl && data.audio_path) {
+        if (playing.value && partialBlobUrl && data.audio_path && briefing.value) {
           fullAudioReady = true
-          // Helper: transition from partial blob to full file
+          audioUrl.value = briefingsApi.getAudio(briefing.value.id)
           transitionToFullAudio()
+        } else {
+          // User hasn't clicked play yet — just set the URL for later replay
+          if (data.audio_path && briefing.value) {
+            audioUrl.value = briefingsApi.getAudio(briefing.value.id)
+            // Restore saved progress if we have a pending position
+            if (pendingRestoreTime !== null) {
+              const targetTime = pendingRestoreTime
+              pendingRestoreTime = null
+              // Wait for the full file to load, then seek
+              const seekAfterLoad = () => {
+                if (!audioEl.value) return
+                const dur = audioEl.value.duration
+                if (dur && dur > 0 && isFinite(dur) && targetTime < dur - 1) {
+                  audioEl.value.currentTime = targetTime
+                  currentTime.value = targetTime
+                  console.log(`[Progress] Done (no play) seeked to ${targetTime.toFixed(1)}s`)
+                }
+              }
+              if (audioEl.value?.readyState >= HTMLMediaElement.HAVE_METADATA) {
+                seekAfterLoad()
+              } else if (audioEl.value) {
+                audioEl.value.addEventListener('loadedmetadata', seekAfterLoad, { once: true })
+              }
+            }
+          }
+          if (rawPcmBuffers.length > 0) {
+            streamState.value = 'done'
+            rawPcmBuffers = []
+            rawPcmTotalSamples = 0
+            estimatedDuration = 0
+          }
+          // Don't reset suppressProgressSave here — the src change (via Vue async DOM update)
+          // happens later and would reset currentTime to 0.
+          // The saveProgress() guard (currentTime < 0.5 skip) protects against saving 0.
+          // Reset after a short delay to allow the audio to settle.
+          setTimeout(() => { suppressProgressSave = false }, 2000)
         }
       } else if (data.type === 'error') {
+        suppressProgressSave = false  // reset flag on error
         streamState.value = 'error'
         showToast(data.message || '音频生成失败', 'error')
         eventSource.close()
@@ -394,6 +583,18 @@ function startStreaming(briefingId) {
   eventSource.onerror = () => {
     if (streamState.value === 'done' || streamState.value === 'error' || streamDonePending.value) return
     console.error('SSE connection error, will auto-reconnect...')
+    // If the audio file was saved while we were away, the SSE endpoint returns
+    // 400 (audio already exists). Stop reconnecting and load the full file.
+    if (briefing.value?.audio_path) {
+      console.log('[Stream] SSE failed but audio_path exists, switching to full file')
+      eventSource?.close()
+      eventSource = null
+      streamState.value = 'done'
+      audioUrl.value = briefingsApi.getAudio(briefing.value.id)
+      // Restore saved progress
+      const saved = loadProgress()
+      if (saved) restoreProgress(saved)
+    }
   }
 }
 
@@ -432,27 +633,70 @@ function playAccumulatedAudio() {
     audioEl.value.src = partialBlobUrl
     audioEl.value.play()
     playing.value = true
+
+    // If there's a pending restore position (from a previous visit during streaming),
+    // seek to it once the blob's metadata is loaded.
+    if (pendingRestoreTime !== null) {
+      const targetTime = pendingRestoreTime
+      pendingRestoreTime = null  // consume once
+      if (audioEl.value) {
+        const doSeek = () => {
+          if (!audioEl.value) return
+          const dur = audioEl.value.duration
+          if (dur && dur > 0 && isFinite(dur) && targetTime < dur - 1) {
+            audioEl.value.currentTime = targetTime
+            currentTime.value = targetTime
+            console.log(`[Progress] Stream blob seeked to ${targetTime.toFixed(1)}s`)
+          }
+        }
+        if (audioEl.value.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          doSeek()
+        } else {
+          audioEl.value.addEventListener('loadedmetadata', doSeek, { once: true })
+        }
+      }
+    }
   }
 }
 
 /**
  * Transition from partial WAV Blob playback to the full saved audio file.
  * Called when streaming finishes and we were playing from a partial blob.
+ * Waits for the full file's metadata to load before seeking, so the browser
+ * can honor the seek position reliably.
+ * Suppresses automatic saveProgress during the transition to prevent the
+ * intermediate currentTime=0 from overwriting the saved position.
  */
 function transitionToFullAudio() {
   if (!audioEl.value || !audioUrl.value) return
 
   // Save current playback position
   const currentPos = audioEl.value.currentTime
+  console.log(`[Progress] transitionToFullAudio: saving pos=${currentPos.toFixed(1)}s, switching to full file`)
+  suppressProgressSave = true
 
   // Switch to full file
   revokePartialBlob()
   audioEl.value.src = audioUrl.value
-  audioEl.value.currentTime = currentPos
 
-  // If user was still playing, continue
-  if (playing.value) {
-    audioEl.value.play()
+  // Wait for metadata to load before seeking — otherwise the browser may clamp to 0
+  const doSeek = () => {
+    if (!audioEl.value) {
+      suppressProgressSave = false
+      return
+    }
+    audioEl.value.currentTime = currentPos
+    console.log(`[Progress] transitionToFullAudio: seeked to ${currentPos.toFixed(1)}s`)
+    suppressProgressSave = false  // re-enable saves after seek
+    if (playing.value) {
+      audioEl.value.play()
+    }
+  }
+
+  if (audioEl.value.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    doSeek()
+  } else {
+    audioEl.value.addEventListener('loadedmetadata', doSeek, { once: true })
   }
 
   streamState.value = 'done'
@@ -507,6 +751,7 @@ function onEnded() {
   playing.value = false
   currentTime.value = 0
   progress.value = 0
+  clearProgress()
   // If we were playing from a partial blob and full audio is ready, switch
   if (fullAudioReady && audioUrl.value) {
     transitionToFullAudio()
@@ -532,9 +777,13 @@ async function regenerateAudio() {
 
 function onTimeUpdate() {
   if (!audioEl.value) return
+  const prevTime = currentTime.value
   currentTime.value = audioEl.value.currentTime
   duration.value = audioEl.value.duration || 0
   progress.value = duration.value ? (currentTime.value / duration.value) * 100 : 0
+  if (Math.abs(currentTime.value - prevTime) > 2) {
+    console.log(`[Progress] onTimeUpdate JUMP: ${prevTime?.toFixed(1)}s → ${currentTime.value?.toFixed(1)}s`)
+  }
 }
 
 function onLoaded() {
@@ -546,6 +795,10 @@ function seek(e) {
   const rect = e.currentTarget.getBoundingClientRect()
   const pos = (e.clientX - rect.left) / rect.width
   audioEl.value.currentTime = pos * duration.value
+  // Clear saved progress if seeking near the start
+  if (pos * duration.value < 1) {
+    clearProgress()
+  }
 }
 
 function setPlaybackRate(rate) {

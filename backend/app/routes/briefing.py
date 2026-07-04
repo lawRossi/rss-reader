@@ -4,6 +4,7 @@ import json
 import logging
 import asyncio
 import base64
+import os as stdlib_os
 from datetime import datetime
 from pathlib import Path
 
@@ -13,60 +14,95 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
 from app.database import get_db, async_session
-from app.models import DailyBriefing, Setting
+from app.models import DailyBriefing
 from app.schemas import DailyBriefingOut, DailyBriefingGenerate
 from app.config import AUDIO_DIR
 from app.services.briefing_generator import generate_briefing as gen_briefing
-from app.services.tts_service import generate_briefing_audio
+from app.services.tts_service import get_active_backend
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/daily-briefings", tags=["Daily Briefings"])
 
 # ─── Background generation tracking ───
-# Ensures at most one audio generation per briefing, even if the client disconnects.
-# Structure: {briefing_id: {"queue": asyncio.Queue, "task": asyncio.Task, ...}}
 _active_generations: dict[int, dict] = {}
 _active_generations_lock = asyncio.Lock()
 
 
+# ─── Helpers ───
+
+async def _update_briefing_status(briefing_id: int, status: str):
+    """Update a briefing's status in a fresh session."""
+    async with async_session() as bg_db:
+        b = await bg_db.get(DailyBriefing, briefing_id)
+        if b:
+            b.status = status
+            await bg_db.commit()
+
+
+async def _finalize_audio_file(briefing_id: int, temp_path: Path, final_path: Path) -> str | None:
+    """Rename temp → final and update DB. Returns relative audio_path or None on failure."""
+    if not temp_path.exists():
+        logger.error("Temp file missing for briefing %s: %s", briefing_id, temp_path)
+        return None
+
+    fsize = temp_path.stat().st_size
+    if fsize <= 44:  # WAV header only = empty audio
+        logger.error("Temp file too small (%s bytes) for briefing %s", fsize, briefing_id)
+        return None
+
+    temp_path.rename(final_path)
+    audio_path = str(final_path.relative_to(AUDIO_DIR))
+    logger.info("File saved: %s (%s bytes)", final_path, fsize)
+
+    async with async_session() as bg_db:
+        b = await bg_db.get(DailyBriefing, briefing_id)
+        if b:
+            b.audio_path = audio_path
+            b.status = "completed"
+            await bg_db.commit()
+
+    return audio_path
+
+
+async def _fail_briefing(briefing_id: int, queue: asyncio.Queue, message: str):
+    """Mark briefing as failed and notify SSE consumers."""
+    logger.error("Briefing %s failed: %s", briefing_id, message)
+    try:
+        queue.put_nowait({"type": "error", "message": message})
+    except Exception:
+        pass
+    await _update_briefing_status(briefing_id, "failed")
+
+
+# ─── Generation lifecycle ───
+
 async def _start_generation(
     briefing_id: int,
-    backend,
     text: str,
     ref_audio_id: str | None,
-) -> asyncio.Queue | None:
+) -> tuple[asyncio.Queue, list[dict]]:
     """Start (or attach to) a background audio generation task for a briefing.
 
-    Returns the asyncio.Queue that the SSE endpoint reads from, or
-    ``None`` if a generation is already in progress and its queue is
-    returned.
-
-    The background task:
-      - writes audio chunks directly to a ``.tmp.wav`` file
-      - puts each chunk's SSE payload into the queue for streaming
-      - on completion renames ``.tmp.wav`` → ``.wav`` and updates the DB
-      - on client disconnect *the background task continues* — the SSE
-        generator exits but the :func:`_run_generation` coroutine lives on.
+    Returns (queue, chunks) where chunks is a replayable list of already-generated chunks.
     """
     async with _active_generations_lock:
         existing = _active_generations.get(briefing_id)
         if existing is not None:
-            # Generation already running — return its queue for re-attachment
-            return existing["queue"]
+            return existing["queue"], existing["chunks"]
 
         queue: asyncio.Queue = asyncio.Queue()
-        info = {"queue": queue, "temp_path": None, "final_path": None, "task": None}
+        info = {"queue": queue, "chunks": [], "temp_path": None, "final_path": None, "task": None}
         _active_generations[briefing_id] = info
 
-    # Start the actual work *outside* the lock
+    backend = get_active_backend()
     task = asyncio.create_task(
         _run_generation(briefing_id, backend, text, ref_audio_id, queue),
     )
     async with _active_generations_lock:
         _active_generations[briefing_id]["task"] = task
 
-    return queue
+    return queue, info["chunks"]
 
 
 async def _stop_generation(briefing_id: int):
@@ -81,6 +117,38 @@ async def _stop_generation(briefing_id: int):
             pass
 
 
+async def run_generation_headless(
+    briefing_id: int, text: str, ref_audio_id: str | None = None,
+) -> bool:
+    """Start audio generation and wait for completion (no SSE client).
+
+    Used by the task scheduler for headless audio generation.
+    """
+    queue, _chunks = await _start_generation(briefing_id, text, ref_audio_id)
+    return await wait_for_generation(briefing_id)
+
+
+async def wait_for_generation(briefing_id: int, timeout: float = 600) -> bool:
+    """Wait for a briefing's audio generation to complete.
+
+    Returns True if generation succeeded, False otherwise.
+    """
+    deadline = stdlib_os.times().elapsed + timeout  # approximate; use time.monotonic()
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        async with _active_generations_lock:
+            info = _active_generations.get(briefing_id)
+            if info is None:
+                # Generation finished and cleaned up — check final status
+                async with async_session() as db:
+                    b = await db.get(DailyBriefing, briefing_id)
+                    return b is not None and b.status == "completed"
+        await asyncio.sleep(1)
+    logger.warning("wait_for_generation(%s) timed out after %ss", briefing_id, timeout)
+    return False
+
+
 async def _run_generation(
     briefing_id: int,
     backend,
@@ -88,182 +156,130 @@ async def _run_generation(
     ref_audio_id: str | None,
     queue: asyncio.Queue,
 ):
-    """Background coroutine — generate audio, write to temp file, update DB.
+    """Background coroutine — linear flow with step tracking.
 
-    This is deliberately kept *outside* the SSE generator so it outlives
-    a client disconnect.  The SSE generator is just a consumer of *queue*.
+    Step-by-step:
+      1. setup_paths     — create temp/final file paths
+      2. mark_generating — set briefing status = "generating"
+      3. open_soundfile  — open .tmp.wav for writing
+      4. generation_loop — async for each chunk: sf_file.write + queue.put_nowait
+      5. close_file      — flush → fsync → close
+      6. save_file       — rename temp → final, update DB, queue "done"
+
+    Uses put_nowait() on the queue — never blocks, never drops chunks.
+    The queue is a best-effort SSE channel; file writing is independent.
     """
     import numpy as np
     import soundfile as sf
 
     temp_path: Path | None = None
     final_path: Path | None = None
-    success = False
+    sf_file: sf.SoundFile | None = None
+    actual_written = 0
+    expected_total = 0
+    step = "init"
 
     try:
+        # ── Step 1: setup_paths ──
+        step = "setup_paths"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         temp_path = AUDIO_DIR / f"briefing_{briefing_id}_{timestamp}_tmp.wav"
         final_path = AUDIO_DIR / f"briefing_{briefing_id}_{timestamp}.wav"
+        logger.info("[%s] temp=%s final=%s", briefing_id, temp_path.name, final_path.name)
 
-        # Persist temp/final paths for potential cleanup
-        async with _active_generations_lock:
-            info = _active_generations.get(briefing_id)
-            if info:
-                info["temp_path"] = temp_path
-                info["final_path"] = final_path
+        # ── Step 2: mark_generating ──
+        step = "mark_generating"
+        await _update_briefing_status(briefing_id, "generating")
 
-        # Mark as generating
-        async with async_session() as bg_db:
-            b = await bg_db.get(DailyBriefing, briefing_id)
-            if b:
-                b.status = "generating"
-                await bg_db.commit()
+        # ── Step 3: open_soundfile ──
+        step = "open_soundfile"
+        # First chunk will set sample rate; open lazily inside loop
 
-        if backend.name == "moss-tts-nano":
-            # ── Streaming (nano) ──
-            first = True
-            sf_file: sf.SoundFile | None = None
-            total = 0
-            chunks_yielded = 0
+        # ── Step 4: generation_loop ──
+        step = "generation_loop"
+        async with async_session() as gen_db:
+            async for audio_bytes, sr, idx, total in backend.generate_audio_streaming(
+                text=text, db=gen_db, ref_audio_id=ref_audio_id,
+            ):
+                if sf_file is None:
+                    sf_file = sf.SoundFile(
+                        str(temp_path), mode="w",
+                        samplerate=int(sr), channels=1,
+                        subtype="PCM_16",
+                    )
+                    expected_total = total
 
-            # Use a fresh DB session (the endpoint's session may be closed
-            # by the time this background task runs)
-            async with async_session() as gen_db:
-                async for audio_bytes, sr, idx, total in backend.generate_audio_streaming(
-                    text=text, db=gen_db, ref_audio_id=ref_audio_id,
-                ):
-                    audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
+                audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
+                write_arr = audio_np.reshape(-1, 1) if audio_np.ndim == 1 else audio_np
+                sf_file.write(write_arr)
+                actual_written += 1
 
-                    if first:
-                        # generate_audio_streaming always outputs mono (1D)
-                        sf_file = sf.SoundFile(
-                            str(temp_path), mode="w",
-                            samplerate=int(sr), channels=1,
-                            subtype="PCM_16",
-                        )
-                        first = False
-
-                    # Write to temp file (no in-memory accumulation ✓)
-                    write_arr = audio_np.reshape(-1, 1) if audio_np.ndim == 1 else audio_np
-                    sf_file.write(write_arr)
-                    chunks_yielded += 1
-
-                    # Put chunk in queue for SSE consumers
-                    await queue.put({
-                        "type": "chunk",
-                        "index": idx,
-                        "total": total,
-                        "sample_rate": int(sr),
-                        "audio_base64": base64.b64encode(audio_bytes).decode("utf-8"),
-                    })
-
-            logger.info(
-                "nano generation loop ended: chunks_yielded=%s, sf_file=%s",
-                chunks_yielded, sf_file is not None,
-            )
-
-            # ── Atomically persist the audio file ──
-            if sf_file:
-                logger.info("Flushing soundfile...")
-                sf_file.flush()
-                logger.info("Closing soundfile...")
-                sf_file.close()
-                logger.info("Soundfile closed, size=%s", temp_path.stat().st_size if temp_path.exists() else "N/A")
-
-            # 2. Only rename if the temp file exists and has content
-            file_saved = False
-            if temp_path and temp_path.exists():
-                fsize = temp_path.stat().st_size
-                logger.info("Temp file exists, size=%s", fsize)
-                if fsize > 44:  # > WAV header
-                    logger.info("Renaming %s → %s", temp_path.name, final_path.name)
-                    temp_path.rename(final_path)
-                    audio_path = str(final_path.relative_to(AUDIO_DIR))
-                    file_saved = True
-                else:
-                    logger.warning("Temp file too small (%s bytes), treating as failed", fsize)
-            else:
-                logger.warning("Temp file does not exist after generation loop")
-
-            if file_saved:
-                logger.info("Updating DB with audio_path=%s", audio_path)
-                async with async_session() as bg_db:
-                    b = await bg_db.get(DailyBriefing, briefing_id)
-                    if b:
-                        b.audio_path = audio_path
-                        b.status = "completed"
-                        await bg_db.commit()
-
-                await queue.put({"type": "done", "audio_path": audio_path})
-                logger.info("Background generation complete: %s", final_path)
-                success = True
-            else:
-                logger.error("No valid audio data written for briefing %s", briefing_id)
-                await queue.put({"type": "error", "message": "音频生成失败：无有效音频数据"})
-                async with async_session() as bg_db:
-                    b = await bg_db.get(DailyBriefing, briefing_id)
-                    if b and b.status == "generating":
-                        b.status = "failed"
-                        await bg_db.commit()
-
-        else:
-            # ── Non-streaming (moss-ttsd) ──
-            ok = await backend.generate_audio(
-                text=text, output_path=temp_path,
-                ref_audio_id=ref_audio_id,
-            )
-            if ok and temp_path.exists():
-                temp_path.rename(final_path)
-                audio_path = str(final_path.relative_to(AUDIO_DIR))
-
-                async with async_session() as bg_db:
-                    b = await bg_db.get(DailyBriefing, briefing_id)
-                    if b:
-                        b.audio_path = audio_path
-                        b.status = "completed"
-                        await bg_db.commit()
-
-                # Read full audio and push as single chunk
-                audio_data, sr = sf.read(str(final_path))
-                audio_bytes = audio_data.astype(np.float32).tobytes()
-                await queue.put({
+                # Non-blocking queue put — never blocks, never drops.
+                chunk_data = {
                     "type": "chunk",
-                    "index": 0, "total": 1,
+                    "index": idx,
+                    "total": total,
                     "sample_rate": int(sr),
                     "audio_base64": base64.b64encode(audio_bytes).decode("utf-8"),
-                })
-                await queue.put({"type": "done", "audio_path": audio_path})
-                logger.info("Background generation complete (non-streaming): %s", final_path)
-                success = True
-            else:
-                await queue.put({"type": "error", "message": "Audio generation failed"})
+                }
+                queue.put_nowait(chunk_data)
+                # Also cache for late-joining SSE clients to replay from start
+                async with _active_generations_lock:
+                    gen_info = _active_generations.get(briefing_id)
+                    if gen_info is not None:
+                        gen_info.setdefault("chunks", []).append(chunk_data)
+
+        logger.info(
+            "[%s] generation_loop done: %d/%d chunks written",
+            briefing_id, actual_written, expected_total,
+        )
+
+        # ── Step 5: close_file ──
+        step = "close_file"
+        if sf_file is not None:
+            sf_file.flush()
+            try:
+                stdlib_os.fsync(sf_file.fileno())
+            except (OSError, AttributeError):
+                # fileno() not available in some soundfile builds
+                pass
+            sf_file.close()
+            sf_file = None
+            logger.info("[%s] soundfile closed, size=%s", briefing_id,
+                        temp_path.stat().st_size if temp_path.exists() else "N/A")
+
+        # ── Step 6: save_file ──
+        step = "save_file"
+        audio_path = await _finalize_audio_file(briefing_id, temp_path, final_path)
+        if audio_path:
+            queue.put_nowait({"type": "done", "audio_path": audio_path})
+            logger.info("[%s] generation complete: %s", briefing_id, final_path)
+        else:
+            queue.put_nowait({"type": "error", "message": "音频文件保存失败"})
+            await _update_briefing_status(briefing_id, "failed")
 
     except asyncio.CancelledError:
-        # Generation cancelled (via _stop_generation) — clean up
-        logger.info("Background generation cancelled for briefing %s", briefing_id)
-        await queue.put({"type": "error", "message": "生成已取消"})
-        async with async_session() as bg_db:
-            b = await bg_db.get(DailyBriefing, briefing_id)
-            if b and b.status == "generating":
-                b.status = "failed"
-                await bg_db.commit()
+        logger.info("[%s] generation cancelled at step=%s", briefing_id, step)
+        await _fail_briefing(briefing_id, queue, "生成已取消")
 
     except Exception as e:
-        logger.error("Background generation failed for briefing %s: %s", briefing_id, e)
-        await queue.put({"type": "error", "message": str(e)})
-        async with async_session() as bg_db:
-            b = await bg_db.get(DailyBriefing, briefing_id)
-            if b and b.status == "generating":
-                b.status = "failed"
-                await bg_db.commit()
+        logger.error("[%s] generation failed at step=%s: %s", briefing_id, step, e, exc_info=True)
+        await _fail_briefing(briefing_id, queue, str(e))
 
     finally:
-        # Clean up temp file if still around
-        if temp_path and temp_path.exists():
+        if sf_file is not None:
+            try:
+                sf_file.close()
+            except Exception:
+                pass
+        # Clean up: only if final doesn't exist (rename didn't happen)
+        if final_path and final_path.exists():
+            pass  # success — keep final
+        elif temp_path and temp_path.exists():
             temp_path.unlink(missing_ok=True)
-        # Remove from active tracking
         async with _active_generations_lock:
             _active_generations.pop(briefing_id, None)
+            logger.info("[%s] removed from active generations", briefing_id)
 
 
 @router.post("/generate", response_model=DailyBriefingOut, status_code=201)
@@ -276,17 +292,11 @@ async def create_briefing(
         from app.schemas import DailyBriefingGenerate
         data = DailyBriefingGenerate()
 
-    # Read TTS engine setting to determine script style
-    result = await db.execute(select(Setting).where(Setting.key == "tts_engine"))
-    tts_setting = result.scalar_one_or_none()
-    tts_engine = tts_setting.value if tts_setting else "moss-ttsd"
-
     briefing = await gen_briefing(
         db,
         date_str=data.date,
         time_range=data.time_range,
         group_id=data.group_id,
-        tts_engine=tts_engine,
         ref_audio_id=data.ref_audio_id,
     )
 
@@ -308,11 +318,11 @@ async def list_briefings(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/tts-backends")
-async def list_tts_backends(db: AsyncSession = Depends(get_db)):
+async def list_tts_backends():
     """Get available TTS backends and their status."""
     from app.services.tts_service import get_available_backends, get_active_backend
-    backends = await get_available_backends(db)
-    active = await get_active_backend(db)
+    backends = await get_available_backends()
+    active = get_active_backend()
     return {
         "backends": {k: {"available": v} for k, v in backends.items()},
         "active": active.name,
@@ -384,8 +394,6 @@ async def stream_briefing_audio(briefing_id: int, request: Request, db: AsyncSes
     * At most one generation per briefing is enforced via
       :data:`_active_generations`.
     """
-    from app.services.tts_service import get_active_backend
-
     briefing = await db.get(DailyBriefing, briefing_id)
     if not briefing:
         raise HTTPException(status_code=404, detail="Briefing not found")
@@ -398,12 +406,9 @@ async def stream_briefing_audio(briefing_id: int, request: Request, db: AsyncSes
         if audio_file.exists():
             raise HTTPException(status_code=400, detail="Audio already exists, use /audio endpoint")
 
-    backend = await get_active_backend(db)
-
     # Start (or attach to) background generation
-    queue = await _start_generation(
+    queue, existing_chunks = await _start_generation(
         briefing_id,
-        backend,
         text=briefing.script_text,
         ref_audio_id=briefing.ref_audio_id,
     )
@@ -411,10 +416,19 @@ async def stream_briefing_audio(briefing_id: int, request: Request, db: AsyncSes
     async def event_generator():
         """Consume the generation queue and yield SSE events.
 
+        First replays all cached chunks (for late-joining clients that
+        missed earlier chunks), then consumes the live queue.
+
         Detects client disconnect via ``request.is_disconnected()`` and
         via ``GeneratorExit``.  In either case the generator exits cleanly
         while the background generation task lives on.
         """
+        # Replay all already-generated chunks for this new client.
+        # Take a snapshot (shallow copy) to avoid race with _run_generation
+        # appending to the same list while we iterate.
+        for chunk_data in list(existing_chunks):
+            yield f"data: {json.dumps(chunk_data)}\n\n"
+
         try:
             while True:
                 try:

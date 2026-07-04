@@ -1,8 +1,7 @@
-"""Daily briefing generation service - creates podcast-style news scripts.
+"""Daily briefing generation service — creates single-narration news scripts.
 
-Supports two modes based on TTS engine:
-- moss-ttsd: Dual-speaker dialogue with [S1]/[S2] markers
-- moss-tts-nano: Single continuous narration for voice cloning
+Only generates NARRATION_PROMPT style (no [S1]/[S2] markers).
+Dual-speaker dialogue (moss-ttsd) was removed in simplification.
 """
 
 import json
@@ -146,25 +145,7 @@ def _preprocess_articles(articles: list) -> list:
     return final[:MAX_ARTICLES]
 
 
-# ─── Dialogue prompt (moss-ttsd): dual speakers with [S1]/[S2] ───
-
-DIALOGUE_PROMPT = """你是一个专业的新闻播报员。请根据以下新闻文章列表，生成一段播报式日报脚本。
-
-要求：
-1. 以新闻播报员的专业口吻
-2. 按重要性排序新闻
-3. 每篇新闻用 2-3 句话概括核心内容
-4. 使用 [S1] 和 [S2] 标记说话人切换，模拟双人对话播报
-5. 语言自然流畅，适合语音朗读
-6. 开头要有问候语，结尾要有结束语
-7. 整体时长控制在 3-5 分钟
-
-新闻列表：
-{articles}
-
-请生成播报脚本："""
-
-# ─── Narration prompt (moss-tts-nano): single speaker, no markers ───
+# ─── Narration prompt (single speaker, no markers) ───
 
 NARRATION_PROMPT = """你是一个专业的新闻播报员。请根据以下新闻文章列表，生成一段单人播报式日报。
 
@@ -188,7 +169,6 @@ async def generate_briefing(
     date_str: str | None = None,
     time_range: str = "today",
     group_id: int | None = None,
-    tts_engine: str = "moss-ttsd",
     ref_audio_id: str | None = None,
 ) -> DailyBriefing | None:
     """Generate a daily briefing based on recent articles.
@@ -202,7 +182,6 @@ async def generate_briefing(
         time_range: Time range filter — "today" (since midnight UTC),
                     "12h" (last 12 hours), "24h" (last 24 hours)
         group_id: Filter by feed group ID; None means all groups
-        tts_engine: "moss-ttsd" for dialogue, "moss-tts-nano" for narration
         ref_audio_id: Override reference audio ID; None = use global config default
     """
     # Use local timezone for date_str and "today" boundary
@@ -292,10 +271,8 @@ async def generate_briefing(
     await db.flush()
     await db.refresh(briefing)
 
-    # Choose prompt based on TTS engine
-    is_dialogue = tts_engine == "moss-ttsd"
-    prompt_template = DIALOGUE_PROMPT if is_dialogue else NARRATION_PROMPT
-    prompt = prompt_template.format(articles=articles_text)
+    # Use single-speaker narration prompt (no [S1]/[S2] markers)
+    prompt = NARRATION_PROMPT.format(articles=articles_text)
 
     system_content = "你是一个专业的新闻播报员，擅长将新闻整理成生动的播报脚本。"
 
@@ -315,13 +292,8 @@ async def generate_briefing(
             briefing.script_text = script
             logger.warning(f"Briefing generation failed: {script[:100]}")
         else:
-            if is_dialogue:
-                # Ensure dialogue has speaker markers
-                if "[S1]" not in script and "[S2]" not in script:
-                    script = "[S1]" + script
-            else:
-                # Ensure narration has NO speaker markers
-                script = script.replace("[S1]", "").replace("[S2]", "").strip()
+            # Strip any stray speaker markers
+            script = script.replace("[S1]", "").replace("[S2]", "").strip()
             briefing.script_text = script
             briefing.status = "completed"
 

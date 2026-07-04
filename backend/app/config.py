@@ -27,28 +27,21 @@ DEFAULT_LLM_SETTINGS = {
     "llm_temperature": "0.7",
 }
 
-# Default TTS settings
+# Default TTS settings (moss-tts-nano only; moss-ttsd removed in simplification)
 DEFAULT_TTS_SETTINGS = {
-    "tts_engine": "moss-ttsd",        # "moss-ttsd" (多主播对话) 或 "moss-tts-nano" (音色克隆)
-    "tts_nano_ref_audios": "[]",       # JSON 数组，多个参考音频 [{id, name, filename, text, active}]
-    "tts_nano_ref_audio": "",          # 兼容旧版，当前激活的参考音频路径
-    "tts_nano_ref_text": "",           # 兼容旧版，当前参考音频文本
-    "tts_nano_temperature": "0.5",     # 生成温度（音色克隆建议 0.3-0.6，越低越稳定）
+    "tts_nano_ref_audios": "[]",       # JSON array of [{id, name, filename, text, active}]
+    "tts_nano_ref_audio": "",          # Legacy single ref audio path
+    "tts_nano_ref_text": "",           # Legacy single ref audio text
+    "tts_nano_temperature": "0.5",     # Generation temperature (0.3-0.6 recommended)
+}
+
+# TTS engine info (single engine)
+TTS_ENGINE_INFO = {
+    "label": "MOSS-TTS-Nano (音色克隆)",
+    "description": "基于参考音频克隆音色，单人播报，自然流畅",
 }
 
 # Default fetch settings
 DEFAULT_FETCH_SETTINGS = {
     "fetch_interval": "30",  # RSS feed fetch interval in minutes
-}
-
-# TTS engine options
-TTS_ENGINE_OPTIONS = {
-    "moss-ttsd": {
-        "label": "MOSS-TTSD (多主播对话)",
-        "description": "使用 [S1]/[S2] 标记生成双人对播，无需参考音频",
-    },
-    "moss-tts-nano": {
-        "label": "MOSS-TTS-Nano (音色克隆)",
-        "description": "基于参考音频克隆音色，单人播报，自然流畅",
-    },
 }

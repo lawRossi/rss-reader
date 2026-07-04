@@ -228,14 +228,7 @@ class TaskScheduler:
                         logger.error(f"ScheduledTask {task_id} not found")
                         return None
 
-                    # Read TTS engine setting
-                    result = await db.execute(
-                        select(Setting).where(Setting.key == "tts_engine")
-                    )
-                    tts_setting = result.scalar_one_or_none()
-                    tts_engine = tts_setting.value if tts_setting else "moss-ttsd"
-
-                    # Generate the briefing script
+                    # Generate the briefing script (always single-narration, no [S1]/[S2])
                     from app.services.briefing_generator import generate_briefing
 
                     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -244,32 +237,35 @@ class TaskScheduler:
                         date_str=date_str,
                         time_range=task.time_range,
                         group_id=task.group_id,
-                        tts_engine=tts_engine,
                     )
 
                     if briefing is None:
                         logger.info(
                             f"Task '{task.name}': no articles found, skipping."
                         )
-                        # Still update last_run_at so we don't keep retrying
                         task.last_run_at = datetime.now(timezone.utc)
                         await db.commit()
-                        return None  # None = no articles, not an error
+                        return None
 
                     # Update last_run_at
                     task.last_run_at = datetime.now(timezone.utc)
 
-                    # Commit briefing + last_run_at BEFORE triggering audio,
-                    # because generate_briefing_audio opens its own session
-                    # and needs to read the committed briefing record.
+                    # Commit briefing BEFORE triggering audio
                     await db.commit()
 
-                    # Optionally generate audio (uses a separate session)
+                    # Optionally generate audio (uses unified streaming path)
                     if task.include_audio and briefing.status == "completed" and briefing.script_text not in ("", "暂无新闻更新。"):
-                        from app.services.tts_service import generate_briefing_audio
+                        from app.routes.briefing import run_generation_headless
 
-                        await generate_briefing_audio(briefing.id, ref_audio_id=task.ref_audio_id)
-                        logger.info(f"Audio generation triggered for briefing {briefing.id}")
+                        success = await run_generation_headless(
+                            briefing.id,
+                            text=briefing.script_text,
+                            ref_audio_id=task.ref_audio_id,
+                        )
+                        if success:
+                            logger.info(f"Audio generated for briefing {briefing.id}")
+                        else:
+                            logger.warning(f"Audio generation failed for briefing {briefing.id}")
 
                     logger.info(
                         f"Task '{task.name}' executed, briefing id={briefing.id}, "
