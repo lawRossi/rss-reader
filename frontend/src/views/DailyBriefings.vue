@@ -35,25 +35,25 @@
         class="bg-[var(--color-surface)] rounded-xl p-4 border border-[var(--color-border)] group">
         <div class="flex items-center justify-between">
           <router-link :to="`/daily/${briefing.id}`" class="flex-1 min-w-0">
-            <div class="flex items-center justify-between">
-              <div>
+            <div class="flex items-center justify-between gap-2">
+              <div class="min-w-0 flex-1">
                 <h3 class="font-semibold text-[var(--color-text)] truncate">{{ briefing.title }}</h3>
                 <p class="text-sm text-[var(--color-text-secondary)] mt-1">{{ briefing.date }}</p>
               </div>
-              <div class="flex items-center gap-2 ml-4">
+              <div class="flex items-center gap-1 shrink-0">
                 <span class="px-2 py-1 rounded-full text-xs whitespace-nowrap"
                   :class="statusClass(briefing.status)">
                   {{ statusText(briefing.status) }}
                 </span>
                 <span class="text-lg">▶️</span>
+                <button @click.stop="confirmDelete(briefing)"
+                  class="p-1.5 rounded-lg text-[var(--color-text-secondary)] md:opacity-0 md:group-hover:opacity-100 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500 transition-all"
+                  title="删除">
+                  🗑️
+                </button>
               </div>
             </div>
           </router-link>
-          <button @click.stop="confirmDelete(briefing)"
-            class="ml-3 p-2 rounded-lg text-[var(--color-text-secondary)] opacity-0 group-hover:opacity-100 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500 transition-all"
-            title="删除">
-            🗑️
-          </button>
         </div>
       </div>
       <div v-if="!briefingStore.briefings.length" class="text-center py-12 text-[var(--color-text-secondary)]">
