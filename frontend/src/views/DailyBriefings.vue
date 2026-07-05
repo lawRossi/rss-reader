@@ -35,22 +35,33 @@
         class="bg-[var(--color-surface)] rounded-xl p-4 border border-[var(--color-border)] group">
         <div class="flex items-center justify-between">
           <router-link :to="`/daily/${briefing.id}`" class="flex-1 min-w-0">
-            <div class="flex items-center justify-between gap-2">
-              <div class="min-w-0 flex-1">
-                <h3 class="font-semibold text-[var(--color-text)] truncate">{{ briefing.title }}</h3>
-                <p class="text-sm text-[var(--color-text-secondary)] mt-1">{{ briefing.date }}</p>
-              </div>
-              <div class="flex items-center gap-1 shrink-0">
-                <span class="px-2 py-1 rounded-full text-xs whitespace-nowrap"
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2">
+              <!-- Mobile: title + status on same row -->
+              <div class="flex items-center justify-between gap-2 sm:hidden">
+                <h3 class="font-semibold text-[var(--color-text)] truncate text-sm flex-1">{{ briefing.title }}</h3>
+                <span class="px-2 py-0.5 rounded-full text-xs whitespace-nowrap shrink-0"
                   :class="statusClass(briefing.status)">
                   {{ statusText(briefing.status) }}
                 </span>
-                <span class="text-lg">▶️</span>
-                <button @click.stop="confirmDelete(briefing)"
-                  class="p-1.5 rounded-lg text-[var(--color-text-secondary)] md:opacity-0 md:group-hover:opacity-100 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500 transition-all"
-                  title="删除">
-                  🗑️
-                </button>
+              </div>
+              <!-- Desktop: title only -->
+              <h3 class="font-semibold text-[var(--color-text)] truncate text-base hidden sm:block">{{ briefing.title }}</h3>
+
+              <!-- Mobile: date + actions | Desktop: status + actions -->
+              <div class="flex items-center justify-between sm:justify-end gap-2 sm:gap-1">
+                <p class="text-xs sm:text-sm text-[var(--color-text-secondary)]">{{ briefing.date }}</p>
+                <div class="flex items-center gap-1 shrink-0">
+                  <span class="px-2 py-0.5 sm:py-1 rounded-full text-xs whitespace-nowrap hidden sm:inline"
+                    :class="statusClass(briefing.status)">
+                    {{ statusText(briefing.status) }}
+                  </span>
+                  <span class="text-base sm:text-lg">▶️</span>
+                  <button @click.stop="confirmDelete(briefing)"
+                    class="p-1 rounded-lg sm:p-1.5 text-[var(--color-text-secondary)] md:opacity-0 md:group-hover:opacity-100 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500 transition-all"
+                    title="删除">
+                    🗑️
+                  </button>
+                </div>
               </div>
             </div>
           </router-link>
@@ -91,7 +102,7 @@
 
         <div v-else class="space-y-2">
           <div v-for="task in scheduledTaskStore.tasks" :key="task.id"
-            class="flex items-center justify-between p-3 rounded-xl border border-[var(--color-border)] hover:border-[var(--color-primary)]/30 transition-colors gap-3">
+            class="flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 rounded-xl border border-[var(--color-border)] hover:border-[var(--color-primary)]/30 transition-colors gap-2 sm:gap-3">
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="font-medium text-[var(--color-text)] text-sm">{{ task.name }}</span>
@@ -108,7 +119,7 @@
                 <span v-else>尚未执行</span>
               </div>
             </div>
-            <div class="flex items-center gap-1 shrink-0">
+            <div class="flex items-center gap-1 shrink-0 self-end sm:self-center">
               <!-- Toggle switch -->
               <button @click="toggleTask(task)"
                 class="relative w-10 h-5 rounded-full transition-colors"
@@ -160,16 +171,18 @@
           <!-- Time: simplified HH:MM mode -->
           <div>
             <label class="block text-sm font-medium text-[var(--color-text)] mb-1">执行时间</label>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
               <span class="text-sm text-[var(--color-text-secondary)]">每天</span>
-              <input v-model="taskForm.timeHour" type="number" min="0" max="23"
-                class="w-16 px-2 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] text-center focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-                placeholder="08" />
-              <span class="text-sm text-[var(--color-text-secondary)]">:</span>
-              <input v-model="taskForm.timeMinute" type="number" min="0" max="59"
-                class="w-16 px-2 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] text-center focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
-                placeholder="00" />
-              <button @click="showRawCron = !showRawCron" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] ml-2">
+              <div class="flex items-center gap-1">
+                <input v-model="taskForm.timeHour" type="number" min="0" max="23"
+                  class="w-14 sm:w-16 px-2 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] text-center focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+                  placeholder="08" />
+                <span class="text-sm text-[var(--color-text-secondary)]">:</span>
+                <input v-model="taskForm.timeMinute" type="number" min="0" max="59"
+                  class="w-14 sm:w-16 px-2 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] text-center focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]"
+                  placeholder="00" />
+              </div>
+              <button @click="showRawCron = !showRawCron" class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]">
                 {{ showRawCron ? '简化模式' : '高级' }}
               </button>
             </div>

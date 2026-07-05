@@ -1,18 +1,18 @@
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
       <h2 class="text-xl font-bold text-[var(--color-text)]">订阅源管理</h2>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <button @click="showCreateGroup = true"
-          class="px-4 py-2 border border-[var(--color-border)] text-[var(--color-text)] rounded-lg text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+          class="px-3 py-2 sm:px-4 border border-[var(--color-border)] text-[var(--color-text)] rounded-lg text-xs sm:text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors whitespace-nowrap">
           📁 新建分组
         </button>
         <button @click="showImportOpml = true"
-          class="px-4 py-2 border border-[var(--color-border)] text-[var(--color-text)] rounded-lg text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+          class="px-3 py-2 sm:px-4 border border-[var(--color-border)] text-[var(--color-text)] rounded-lg text-xs sm:text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors whitespace-nowrap">
           📂 导入 OPML
         </button>
         <button @click="showAddFeed = true"
-          class="px-4 py-2 bg-[var(--color-primary)] text-white rounded-lg text-sm hover:bg-[var(--color-primary-dark)] transition-colors">
+          class="px-3 py-2 sm:px-4 bg-[var(--color-primary)] text-white rounded-lg text-xs sm:text-sm hover:bg-[var(--color-primary-dark)] transition-colors whitespace-nowrap">
           + 添加源
         </button>
       </div>

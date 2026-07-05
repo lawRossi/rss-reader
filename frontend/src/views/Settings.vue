@@ -337,41 +337,45 @@
     </div>
 
     <!-- Feed Fetch Configuration -->
-    <div class="bg-[var(--color-surface)] rounded-2xl p-6 border border-[var(--color-border)] space-y-6">
+    <div class="bg-[var(--color-surface)] rounded-2xl p-4 sm:p-6 border border-[var(--color-border)] space-y-4 sm:space-y-6">
       <h3 class="font-semibold text-[var(--color-text)] border-b border-[var(--color-border)] pb-3">📡 定期抓取</h3>
 
       <div class="space-y-4">
         <div>
-          <label class="block text-sm font-medium text-[var(--color-text)] mb-1">抓取间隔（分钟）</label>
-          <div class="flex gap-2">
-            <input v-model.number="fetchIntervalInput" type="number" min="1" max="1440"
-              class="w-32 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]" />
-            <span class="text-sm text-[var(--color-text-secondary)] self-center">分钟（最小 1 分钟）</span>
+          <label class="block text-sm font-medium text-[var(--color-text)] mb-1">抓取间隔</label>
+          <div class="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2">
+            <div class="flex items-center gap-2">
+              <input v-model.number="fetchIntervalInput" type="number" min="1" max="1440"
+                class="w-24 sm:w-32 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]" />
+              <span class="text-sm text-[var(--color-text-secondary)]">分钟</span>
+            </div>
+            <span class="text-xs text-[var(--color-text-secondary)]">最小 1 分钟，最大 1440 分钟（24 小时）</span>
           </div>
         </div>
 
-        <div class="grid grid-cols-2 gap-4 text-sm">
+        <div class="grid grid-cols-2 gap-3 text-sm">
           <div class="p-3 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
-            <div class="text-[var(--color-text-secondary)]">上次抓取</div>
-            <div class="font-medium text-[var(--color-text)] mt-1">{{ fetchStatus.last_run ? formatTime(fetchStatus.last_run) : '暂无记录' }}</div>
+            <div class="text-xs sm:text-sm text-[var(--color-text-secondary)]">上次抓取</div>
+            <div class="font-medium text-[var(--color-text)] mt-1 text-sm sm:text-base">{{ fetchStatus.last_run ? formatTime(fetchStatus.last_run) : '暂无记录' }}</div>
           </div>
           <div class="p-3 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
-            <div class="text-[var(--color-text-secondary)]">下次抓取</div>
-            <div class="font-medium text-[var(--color-text)] mt-1">{{ fetchStatus.next_run ? formatTime(fetchStatus.next_run) : '未调度' }}</div>
+            <div class="text-xs sm:text-sm text-[var(--color-text-secondary)]">下次抓取</div>
+            <div class="font-medium text-[var(--color-text)] mt-1 text-sm sm:text-base">{{ fetchStatus.next_run ? formatTime(fetchStatus.next_run) : '未调度' }}</div>
           </div>
         </div>
 
-        <div class="flex gap-3 pt-2">
+        <div class="flex flex-wrap gap-2 pt-2">
           <button @click="saveFetchInterval" :disabled="savingFetchInterval"
-            class="px-4 py-2 bg-[var(--color-primary)] text-white rounded-lg text-sm disabled:opacity-50">
-            {{ savingFetchInterval ? '保存中...' : '💾 保存间隔' }}
+            class="flex-1 sm:flex-none px-3 py-2 sm:px-4 bg-[var(--color-primary)] text-white rounded-lg text-xs sm:text-sm disabled:opacity-50 whitespace-nowrap">
+            {{ savingFetchInterval ? '保存中...' : '💾 保存设置' }}
           </button>
           <button @click="triggerFetch" :disabled="fetchingNow"
-            class="px-4 py-2 rounded-lg border border-[var(--color-border)] text-[var(--color-text)] text-sm disabled:opacity-50">
+            class="flex-1 sm:flex-none px-3 py-2 sm:px-4 rounded-lg border border-[var(--color-border)] text-[var(--color-text)] text-xs sm:text-sm disabled:opacity-50 whitespace-nowrap">
             {{ fetchingNow ? '抓取中...' : '🚀 立即抓取' }}
           </button>
-          <button @click="loadFetchStatus" class="px-4 py-2 rounded-lg border border-[var(--color-border)] text-[var(--color-text)] text-sm">
-            🔄 刷新状态
+          <button @click="loadFetchStatus"
+            class="flex-1 sm:flex-none px-3 py-2 sm:px-4 rounded-lg border border-[var(--color-border)] text-[var(--color-text)] text-xs sm:text-sm whitespace-nowrap">
+            🔄 刷新
           </button>
         </div>
 

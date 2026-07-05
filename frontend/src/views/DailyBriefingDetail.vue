@@ -11,12 +11,12 @@
 
     <div v-else-if="briefing" class="space-y-4">
       <div class="bg-[var(--color-surface)] rounded-2xl p-6 border border-[var(--color-border)]">
-        <div class="flex items-start justify-between gap-4">
+        <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
           <div class="min-w-0 flex-1">
-            <h1 class="text-2xl font-bold text-[var(--color-text)] truncate">{{ briefing.title }}</h1>
+            <h1 class="text-lg sm:text-2xl font-bold text-[var(--color-text)] truncate">{{ briefing.title }}</h1>
             <p class="text-sm text-[var(--color-text-secondary)] mt-1">{{ briefing.date }}</p>
           </div>
-          <div class="flex items-center gap-2 shrink-0">
+          <div class="flex items-center gap-2 flex-wrap">
             <!-- Engine badge -->
             <span class="px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap"
               :class="isDialogue
