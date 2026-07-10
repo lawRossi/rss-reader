@@ -24,13 +24,14 @@
           </option>
         </select>
         <!-- Edge TTS voice selector -->
-        <select v-if="ttsEngine === 'edge-tts'" v-model="selectedEdgeVoice"
-          class="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)] max-w-[180px]">
-          <option :value="null">🌐 默认音色</option>
-          <option v-for="v in edgeVoices" :key="v.short_name" :value="v.short_name" :title="v.display_name">
-            🌐 {{ v.short_label }}
-          </option>
-        </select>
+        <VoiceDropdown
+          v-if="ttsEngine === 'edge-tts'"
+          v-model="selectedEdgeVoice"
+          :options="edgeVoices"
+          :showNullOption="true"
+          nullLabel="🌐 默认音色"
+          class="max-w-[180px]"
+        />
         <button @click="generateBriefing" :disabled="generating"
           class="px-4 py-2 bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-secondary)] text-white rounded-lg text-sm font-medium disabled:opacity-50 whitespace-nowrap">
           {{ generating ? '生成中...' : '生成播报' }}
@@ -250,13 +251,12 @@
           <!-- Edge TTS voice (only for edge engine) -->
           <div v-if="ttsEngine === 'edge-tts'">
             <label class="block text-sm font-medium text-[var(--color-text)] mb-1">语音音色</label>
-            <select v-model="taskForm.tts_edge_voice"
-              class="w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]">
-              <option :value="null">🌐 使用全局默认</option>
-              <option v-for="v in edgeVoices" :key="v.short_name" :value="v.short_name" :title="v.display_name">
-                🌐 {{ v.short_label }}
-              </option>
-            </select>
+            <VoiceDropdown
+              v-model="taskForm.tts_edge_voice"
+              :options="edgeVoices"
+              :showNullOption="true"
+              nullLabel="🌐 使用全局默认"
+            />
           </div>
         </div>
 
@@ -281,6 +281,7 @@ import { useBriefingStore } from '../stores/briefingStore'
 import { useScheduledTaskStore } from '../stores/scheduledTaskStore'
 import { groupsApi, settingsApi } from '../api'
 import api from '../api'
+import VoiceDropdown from '../components/VoiceDropdown.vue'
 
 const briefingStore = useBriefingStore()
 const scheduledTaskStore = useScheduledTaskStore()

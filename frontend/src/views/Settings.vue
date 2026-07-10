@@ -326,17 +326,15 @@
           <div class="space-y-2">
             <label class="text-sm text-[var(--color-text-secondary)]">选择音色</label>
             <div class="flex items-center gap-2">
-              <select v-model="form.tts_edge_voice"
-                class="flex-1 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]">
-                <option value="" disabled>{{ edgeVoicesLoading ? '加载音色列表中...' : '请选择音色' }}</option>
-                <optgroup v-for="group in edgeVoiceGroups" :key="group.label" :label="group.label">
-                  <option v-for="v in group.voices" :key="v.short_name" :value="v.short_name" :title="v.display_name">
-                    {{ v.short_label }}
-                  </option>
-                </optgroup>
-              </select>
+              <VoiceDropdown
+                v-model="form.tts_edge_voice"
+                :groups="edgeVoiceGroupsForDropdown"
+                :showNullOption="false"
+                placeholder="请选择音色"
+                class="flex-1"
+              />
               <button @click="previewEdgeVoice"
-                class="px-3 py-2 rounded-lg border border-[var(--color-border)] text-sm hover:bg-[var(--color-primary)]/10 transition-all"
+                class="px-3 py-2 rounded-lg border border-[var(--color-border)] text-sm hover:bg-[var(--color-primary)]/10 transition-all shrink-0"
                 :disabled="!form.tts_edge_voice || previewingVoice"
                 title="试听">
                 {{ previewingVoice ? '⏳' : '▶️' }}
@@ -428,6 +426,7 @@
 import { ref, reactive, computed, onMounted, inject } from 'vue'
 import { useSettingsStore } from '../stores/settingsStore'
 import api, { settingsApi, briefingsApi, feedsApi } from '../api'
+import VoiceDropdown from '../components/VoiceDropdown.vue'
 
 const settingsStore = useSettingsStore()
 const showToast = inject('showToast')
@@ -457,6 +456,16 @@ const edgeVoiceGroups = computed(() => {
   if (zh.length) groups.push({ label: '🇨🇳 中文音色', voices: zh })
   if (other.length) groups.push({ label: '🌍 其他语言', voices: other })
   return groups
+})
+
+const edgeVoiceGroupsForDropdown = computed(() => {
+  return edgeVoiceGroups.value.map(g => ({
+    label: g.label,
+    options: g.voices.map(v => ({
+      value: v.short_name,
+      label: v.short_label || v.display_name,
+    }))
+  }))
 })
 
 const selectedVoiceInfo = computed(() => {
