@@ -330,8 +330,8 @@
                 class="flex-1 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]">
                 <option value="" disabled>{{ edgeVoicesLoading ? '加载音色列表中...' : '请选择音色' }}</option>
                 <optgroup v-for="group in edgeVoiceGroups" :key="group.label" :label="group.label">
-                  <option v-for="v in group.voices" :key="v.short_name" :value="v.short_name">
-                    {{ v.display_name }} ({{ v.gender === 'Female' ? '女声' : '男声' }})
+                  <option v-for="v in group.voices" :key="v.short_name" :value="v.short_name" :title="v.display_name">
+                    {{ v.short_label }}
                   </option>
                 </optgroup>
               </select>
@@ -343,7 +343,7 @@
               </button>
             </div>
             <div v-if="selectedVoiceInfo" class="text-xs text-[var(--color-text-secondary)]">
-              当前：{{ selectedVoiceInfo.display_name }}（{{ selectedVoiceInfo.locale }}）
+              当前：{{ selectedVoiceInfo.short_label }}（{{ selectedVoiceInfo.locale }}）
             </div>
           </div>
         </div>

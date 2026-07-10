@@ -115,14 +115,31 @@ async def get_edge_tts_voices():
     """List available Edge TTS voices, prioritizing Chinese voices."""
     try:
         import edge_tts
+        import re
         voices = await edge_tts.list_voices()
         result = []
         for v in voices:
             display_name = v.get('FriendlyName') or v.get('ShortName', '')
             locale = v.get('Locale', '')
             gender = v.get('Gender', '')
+
+            # Derive a short label: extract the voice name from FriendlyName or ShortName
+            short_name = v['ShortName']
+            # Try to parse "Microsoft NAME Online (Natural) ..." → "NAME"
+            m = re.search(r'Microsoft\s+(\w+)', display_name)
+            if m:
+                label = m.group(1)
+            else:
+                # Fallback: extract from ShortName like "zh-CN-XiaoxiaoNeural" → "Xiaoxiao"
+                m = re.search(r'-(\w+)Neural$', short_name)
+                label = m.group(1) if m else short_name
+
+            gender_label = '女声' if gender == 'Female' else '男声'
+            short_label = f'{label} · {gender_label}'
+
             result.append({
-                "short_name": v['ShortName'],
+                "short_name": short_name,
+                "short_label": short_label,
                 "locale": locale,
                 "gender": gender,
                 "display_name": display_name,

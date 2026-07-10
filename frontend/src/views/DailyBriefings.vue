@@ -27,8 +27,8 @@
         <select v-if="ttsEngine === 'edge-tts'" v-model="selectedEdgeVoice"
           class="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)] max-w-[180px]">
           <option :value="null">🌐 默认音色</option>
-          <option v-for="v in edgeVoices" :key="v.short_name" :value="v.short_name">
-            {{ v.display_name }} ({{ v.gender === 'Female' ? '女声' : '男声' }})
+          <option v-for="v in edgeVoices" :key="v.short_name" :value="v.short_name" :title="v.display_name">
+            🌐 {{ v.short_label }}
           </option>
         </select>
         <button @click="generateBriefing" :disabled="generating"
@@ -253,8 +253,8 @@
             <select v-model="taskForm.tts_edge_voice"
               class="w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]">
               <option :value="null">🌐 使用全局默认</option>
-              <option v-for="v in edgeVoices" :key="v.short_name" :value="v.short_name">
-                {{ v.display_name }} ({{ v.gender === 'Female' ? '女声' : '男声' }})
+              <option v-for="v in edgeVoices" :key="v.short_name" :value="v.short_name" :title="v.display_name">
+                🌐 {{ v.short_label }}
               </option>
             </select>
           </div>
