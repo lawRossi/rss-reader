@@ -32,6 +32,12 @@ huggingface-hub = "^0.27"
 # ── WeTextProcessing 文本正则化（可选增强，用于 TTS 中文文本预处理） ──
 tn = "^0.0.5"
 
+# ── Edge-TTS (Microsoft Edge 在线 TTS，免费，高质量) ──
+edge-tts = "^7.0"
+
+# ── miniaudio (MP3 解码，无外部依赖) ──
+miniaudio = "^1.71"
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
 pytest-asyncio = "^0.25"

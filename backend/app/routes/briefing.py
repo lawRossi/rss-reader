@@ -18,7 +18,12 @@ from app.models import DailyBriefing
 from app.schemas import DailyBriefingOut, DailyBriefingGenerate
 from app.config import AUDIO_DIR
 from app.services.briefing_generator import generate_briefing as gen_briefing
-from app.services.tts_service import get_active_backend
+from app.services.tts_service import (
+    get_active_backend,
+    get_available_backends,
+    set_selected_engine,
+    _get_setting as _get_tts_setting,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +86,8 @@ async def _start_generation(
     briefing_id: int,
     text: str,
     ref_audio_id: str | None,
+    engine_name: str | None = None,
+    tts_edge_voice: str | None = None,
 ) -> tuple[asyncio.Queue, list[dict]]:
     """Start (or attach to) a background audio generation task for a briefing.
 
@@ -95,9 +102,12 @@ async def _start_generation(
         info = {"queue": queue, "chunks": [], "temp_path": None, "final_path": None, "task": None}
         _active_generations[briefing_id] = info
 
+    # Use the specified engine, or fall back to the globally selected one
+    if engine_name:
+        set_selected_engine(engine_name)
     backend = get_active_backend()
     task = asyncio.create_task(
-        _run_generation(briefing_id, backend, text, ref_audio_id, queue),
+        _run_generation(briefing_id, backend, text, ref_audio_id, queue, tts_edge_voice=tts_edge_voice),
     )
     async with _active_generations_lock:
         _active_generations[briefing_id]["task"] = task
@@ -119,12 +129,16 @@ async def _stop_generation(briefing_id: int):
 
 async def run_generation_headless(
     briefing_id: int, text: str, ref_audio_id: str | None = None,
+    engine_name: str | None = None, tts_edge_voice: str | None = None,
 ) -> bool:
     """Start audio generation and wait for completion (no SSE client).
 
     Used by the task scheduler for headless audio generation.
     """
-    queue, _chunks = await _start_generation(briefing_id, text, ref_audio_id)
+    queue, _chunks = await _start_generation(
+        briefing_id, text, ref_audio_id,
+        engine_name=engine_name, tts_edge_voice=tts_edge_voice,
+    )
     return await wait_for_generation(briefing_id)
 
 
@@ -155,6 +169,7 @@ async def _run_generation(
     text: str,
     ref_audio_id: str | None,
     queue: asyncio.Queue,
+    tts_edge_voice: str | None = None,
 ):
     """Background coroutine — linear flow with step tracking.
 
@@ -200,6 +215,7 @@ async def _run_generation(
         async with async_session() as gen_db:
             async for audio_bytes, sr, idx, total in backend.generate_audio_streaming(
                 text=text, db=gen_db, ref_audio_id=ref_audio_id,
+                tts_edge_voice=tts_edge_voice,
             ):
                 if sf_file is None:
                     sf_file = sf.SoundFile(
@@ -282,7 +298,7 @@ async def _run_generation(
             logger.info("[%s] removed from active generations", briefing_id)
 
 
-@router.post("/generate", response_model=DailyBriefingOut, status_code=201)
+@router.post("/generate", status_code=201)
 async def create_briefing(
     data: DailyBriefingGenerate = None,
     db: AsyncSession = Depends(get_db),
@@ -298,6 +314,7 @@ async def create_briefing(
         time_range=data.time_range,
         group_id=data.group_id,
         ref_audio_id=data.ref_audio_id,
+        tts_edge_voice=data.tts_edge_voice,
     )
 
     if briefing is None:
@@ -318,14 +335,15 @@ async def list_briefings(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/tts-backends")
-async def list_tts_backends():
+async def list_tts_backends(db: AsyncSession = Depends(get_db)):
     """Get available TTS backends and their status."""
-    from app.services.tts_service import get_available_backends, get_active_backend
+    from app.config import TTS_ENGINE_INFO
     backends = await get_available_backends()
-    active = get_active_backend()
+    # Read the active engine from DB settings
+    engine = await _get_tts_setting(db, "tts_engine", "edge-tts")
     return {
-        "backends": {k: {"available": v} for k, v in backends.items()},
-        "active": active.name,
+        "backends": {k: {"available": v, **TTS_ENGINE_INFO.get(k, {})} for k, v in backends.items()},
+        "active": engine,
     }
 
 
@@ -406,11 +424,19 @@ async def stream_briefing_audio(briefing_id: int, request: Request, db: AsyncSes
         if audio_file.exists():
             raise HTTPException(status_code=400, detail="Audio already exists, use /audio endpoint")
 
+    # Read the active TTS engine from DB settings
+    engine_name = await _get_tts_setting(db, "tts_engine", "edge-tts")
+
+    # Use briefing-specific voice override if set, otherwise None (use global)
+    voice_override = briefing.tts_edge_voice
+
     # Start (or attach to) background generation
     queue, existing_chunks = await _start_generation(
         briefing_id,
         text=briefing.script_text,
         ref_audio_id=briefing.ref_audio_id,
+        engine_name=engine_name,
+        tts_edge_voice=voice_override,
     )
 
     async def event_generator():

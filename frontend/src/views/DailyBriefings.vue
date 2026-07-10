@@ -23,6 +23,14 @@
             {{ audio.name }}{{ audio.active ? ' (当前)' : '' }}
           </option>
         </select>
+        <!-- Edge TTS voice selector -->
+        <select v-if="ttsEngine === 'edge-tts'" v-model="selectedEdgeVoice"
+          class="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)] max-w-[180px]">
+          <option :value="null">🌐 默认音色</option>
+          <option v-for="v in edgeVoices" :key="v.short_name" :value="v.short_name">
+            {{ v.display_name }} ({{ v.gender === 'Female' ? '女声' : '男声' }})
+          </option>
+        </select>
         <button @click="generateBriefing" :disabled="generating"
           class="px-4 py-2 bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-secondary)] text-white rounded-lg text-sm font-medium disabled:opacity-50 whitespace-nowrap">
           {{ generating ? '生成中...' : '生成播报' }}
@@ -33,7 +41,7 @@
     <div class="space-y-3">
       <div v-for="briefing in briefingStore.briefings" :key="briefing.id"
         class="bg-[var(--color-surface)] rounded-xl p-4 border border-[var(--color-border)] group">
-        <div class="flex items-center justify-between">
+        <div class="flex items-start justify-between gap-2">
           <router-link :to="`/daily/${briefing.id}`" class="flex-1 min-w-0">
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2">
               <!-- Mobile: title + status on same row -->
@@ -47,7 +55,7 @@
               <!-- Desktop: title only -->
               <h3 class="font-semibold text-[var(--color-text)] truncate text-base hidden sm:block">{{ briefing.title }}</h3>
 
-              <!-- Mobile: date + actions | Desktop: status + actions -->
+              <!-- Mobile: date + play | Desktop: status + play -->
               <div class="flex items-center justify-between sm:justify-end gap-2 sm:gap-1">
                 <p class="text-xs sm:text-sm text-[var(--color-text-secondary)]">{{ briefing.date }}</p>
                 <div class="flex items-center gap-1 shrink-0">
@@ -56,15 +64,15 @@
                     {{ statusText(briefing.status) }}
                   </span>
                   <span class="text-base sm:text-lg">▶️</span>
-                  <button @click.stop="confirmDelete(briefing)"
-                    class="p-1 rounded-lg sm:p-1.5 text-[var(--color-text-secondary)] md:opacity-0 md:group-hover:opacity-100 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500 transition-all"
-                    title="删除">
-                    🗑️
-                  </button>
                 </div>
               </div>
             </div>
           </router-link>
+          <button @click.stop="confirmDelete(briefing)"
+            class="p-1.5 rounded-lg text-[var(--color-text-secondary)] md:opacity-0 md:group-hover:opacity-100 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-500 transition-all self-center sm:self-center mt-0 sm:mt-0"
+            title="删除">
+            🗑️
+          </button>
         </div>
       </div>
       <div v-if="!briefingStore.briefings.length" class="text-center py-12 text-[var(--color-text-secondary)]">
@@ -115,6 +123,7 @@
                 <span>{{ task.group_id ? (groupName(task.group_id) || '分组' + task.group_id) : '📂 全部' }}</span>
                 <span>{{ task.include_audio ? '🔊 含音频' : '📄 仅文本' }}</span>
                 <span v-if="task.ref_audio_id && task.include_audio">🎤 指定音色</span>
+                <span v-if="task.tts_edge_voice && task.include_audio">🌐 {{ task.tts_edge_voice }}</span>
                 <span v-if="task.last_run_at">上次: {{ formatTime(task.last_run_at) }}</span>
                 <span v-else>尚未执行</span>
               </div>
@@ -237,6 +246,18 @@
               </option>
             </select>
           </div>
+
+          <!-- Edge TTS voice (only for edge engine) -->
+          <div v-if="ttsEngine === 'edge-tts'">
+            <label class="block text-sm font-medium text-[var(--color-text)] mb-1">语音音色</label>
+            <select v-model="taskForm.tts_edge_voice"
+              class="w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]">
+              <option :value="null">🌐 使用全局默认</option>
+              <option v-for="v in edgeVoices" :key="v.short_name" :value="v.short_name">
+                {{ v.display_name }} ({{ v.gender === 'Female' ? '女声' : '男声' }})
+              </option>
+            </select>
+          </div>
         </div>
 
         <div class="flex gap-2 mt-6">
@@ -270,8 +291,11 @@ const selectedTimeRange = ref('today')
 const selectedGroupId = ref(null)
 const selectedRefAudioId = ref(null)
 const refAudios = ref([])
-const ttsEngine = ref('moss-ttsd')
+const ttsEngine = ref('edge-tts')
 const groups = ref([])
+const selectedEdgeVoice = ref(null)
+const edgeVoices = ref([])
+const edgeVoicesLoading = ref(false)
 
 // ── Scheduled tasks UI state ──
 const showScheduledSection = ref(true)
@@ -288,6 +312,7 @@ const taskForm = reactive({
   group_id: null,
   include_audio: true,
   ref_audio_id: null,
+  tts_edge_voice: null,
   timeHour: 8,
   timeMinute: 0,
 })
@@ -300,6 +325,7 @@ onMounted(async () => {
     loadGroups(),
     loadRefAudios(),
     loadTtsEngine(),
+    loadEdgeVoices(),
   ])
 })
 
@@ -328,6 +354,19 @@ async function loadTtsEngine() {
     if (engine) ttsEngine.value = engine.value
   } catch (e) {
     console.error('Failed to load TTS engine:', e)
+  }
+}
+
+async function loadEdgeVoices() {
+  edgeVoicesLoading.value = true
+  try {
+    const res = await api.get('/settings/tts-edge-voices', { timeout: 15000 })
+    // Only show Chinese voices in the briefings page selector
+    edgeVoices.value = (res.data.voices || []).filter(v => v.is_chinese)
+  } catch (e) {
+    console.error('Failed to load edge voices:', e)
+  } finally {
+    edgeVoicesLoading.value = false
   }
 }
 
@@ -420,6 +459,7 @@ async function generateBriefing() {
       time_range: selectedTimeRange.value,
       group_id: selectedGroupId.value,
       ref_audio_id: selectedRefAudioId.value,
+      tts_edge_voice: selectedEdgeVoice.value,
     })
     if (res?.no_content) {
       showToast('所选时间范围内没有新文章', 'info')
@@ -459,6 +499,7 @@ function openCreateModal() {
   taskForm.group_id = null
   taskForm.include_audio = true
   taskForm.ref_audio_id = null
+  taskForm.tts_edge_voice = null
   taskForm.timeHour = 8
   taskForm.timeMinute = 0
   showTaskModal.value = true
@@ -473,6 +514,7 @@ function openEditModal(task) {
   taskForm.group_id = task.group_id
   taskForm.include_audio = task.include_audio
   taskForm.ref_audio_id = task.ref_audio_id || null
+  taskForm.tts_edge_voice = task.tts_edge_voice || null
   // Parse hour/minute from cron
   if (parts.length === 5) {
     taskForm.timeMinute = parseInt(parts[0]) || 0
@@ -514,6 +556,7 @@ async function saveTask() {
       group_id: taskForm.group_id,
       include_audio: taskForm.include_audio,
       ref_audio_id: taskForm.ref_audio_id,
+      tts_edge_voice: taskForm.tts_edge_voice,
     }
 
     if (editingTask.value) {

@@ -237,6 +237,8 @@ class TaskScheduler:
                         date_str=date_str,
                         time_range=task.time_range,
                         group_id=task.group_id,
+                        ref_audio_id=task.ref_audio_id,
+                        tts_edge_voice=task.tts_edge_voice,
                     )
 
                     if briefing is None:
@@ -257,10 +259,20 @@ class TaskScheduler:
                     if task.include_audio and briefing.status == "completed" and briefing.script_text not in ("", "暂无新闻更新。"):
                         from app.routes.briefing import run_generation_headless
 
+                        # Read active TTS engine from DB
+                        from app.models import Setting as SettingModel
+                        engine_result = await db.execute(
+                            select(SettingModel).where(SettingModel.key == "tts_engine")
+                        )
+                        engine_setting = engine_result.scalar_one_or_none()
+                        engine_name = engine_setting.value if engine_setting else "edge-tts"
+
                         success = await run_generation_headless(
                             briefing.id,
                             text=briefing.script_text,
                             ref_audio_id=task.ref_audio_id,
+                            engine_name=engine_name,
+                            tts_edge_voice=task.tts_edge_voice,
                         )
                         if success:
                             logger.info(f"Audio generated for briefing {briefing.id}")

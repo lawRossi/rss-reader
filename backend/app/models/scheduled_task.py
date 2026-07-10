@@ -15,6 +15,7 @@ class ScheduledTask(Base):
     group_id = Column(Integer, nullable=True)  # null = all groups
     include_audio = Column(Boolean, default=True)
     ref_audio_id = Column(String(50), nullable=True)  # Override reference audio; None = use global
+    tts_edge_voice = Column(String(100), nullable=True)  # Override Edge TTS voice; None = use global
     enabled = Column(Boolean, default=True)
     last_run_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

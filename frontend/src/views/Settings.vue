@@ -316,11 +316,36 @@
           </div>
         </div>
 
-        <div v-if="form.tts_engine === 'moss-ttsd'" class="p-4 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)]">
-          <p class="text-sm text-[var(--color-text-secondary)]">
-            🎙️ MOSS-TTSD 使用 [S1]/[S2] 标记生成双人对播对话，无需配置参考音频。
-            生成日报时会自动将脚本转换为双人播报音频。
+        <div v-if="form.tts_engine === 'edge-tts'" class="space-y-4 p-4 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)]">
+          <h4 class="text-sm font-medium text-[var(--color-text)]">🌐 微软在线语音设置</h4>
+          <p class="text-xs text-[var(--color-text-secondary)]">
+            Edge TTS 使用微软在线语音合成服务，无需配置参考音频或模型文件。联网即可使用。
           </p>
+
+          <!-- Voice Selector -->
+          <div class="space-y-2">
+            <label class="text-sm text-[var(--color-text-secondary)]">选择音色</label>
+            <div class="flex items-center gap-2">
+              <select v-model="form.tts_edge_voice"
+                class="flex-1 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]">
+                <option value="" disabled>{{ edgeVoicesLoading ? '加载音色列表中...' : '请选择音色' }}</option>
+                <optgroup v-for="group in edgeVoiceGroups" :key="group.label" :label="group.label">
+                  <option v-for="v in group.voices" :key="v.short_name" :value="v.short_name">
+                    {{ v.display_name }} ({{ v.gender === 'Female' ? '女声' : '男声' }})
+                  </option>
+                </optgroup>
+              </select>
+              <button @click="previewEdgeVoice"
+                class="px-3 py-2 rounded-lg border border-[var(--color-border)] text-sm hover:bg-[var(--color-primary)]/10 transition-all"
+                :disabled="!form.tts_edge_voice || previewingVoice"
+                title="试听">
+                {{ previewingVoice ? '⏳' : '▶️' }}
+              </button>
+            </div>
+            <div v-if="selectedVoiceInfo" class="text-xs text-[var(--color-text-secondary)]">
+              当前：{{ selectedVoiceInfo.display_name }}（{{ selectedVoiceInfo.locale }}）
+            </div>
+          </div>
         </div>
 
         <div class="flex gap-3 pt-3">
@@ -391,8 +416,9 @@
       <div class="text-sm text-[var(--color-text-secondary)] space-y-2">
         <p>RSS Reader v0.1.0</p>
         <p>技术栈：FastAPI + Vue 3 + Tailwind CSS + SQLite</p>
-        <p v-if="form.tts_engine === 'moss-ttsd'">语音引擎：MOSS-TTSD (多主播对话)</p>
-        <p v-else>语音引擎：MOSS-TTS-Nano (音色克隆)</p>
+        <p v-if="form.tts_engine === 'edge-tts'">语音引擎：Edge TTS (微软在线)</p>
+        <p v-else-if="form.tts_engine === 'moss-tts-nano'">语音引擎：MOSS-TTS-Nano (音色克隆)</p>
+        <p v-else>语音引擎：{{ form.tts_engine }}</p>
       </div>
     </div>
   </div>
@@ -418,6 +444,24 @@ const showBriefingLlm = ref(false)
 const ttsEngines = ref({})
 const ttsStatus = ref({})
 const checkingTts = ref(false)
+
+// Edge TTS voice selection
+const edgeVoices = ref([])
+const edgeVoicesLoading = ref(false)
+const previewingVoice = ref(false)
+
+const edgeVoiceGroups = computed(() => {
+  const zh = edgeVoices.value.filter(v => v.is_chinese)
+  const other = edgeVoices.value.filter(v => !v.is_chinese)
+  const groups = []
+  if (zh.length) groups.push({ label: '🇨🇳 中文音色', voices: zh })
+  if (other.length) groups.push({ label: '🌍 其他语言', voices: other })
+  return groups
+})
+
+const selectedVoiceInfo = computed(() => {
+  return edgeVoices.value.find(v => v.short_name === form.tts_edge_voice) || null
+})
 
 // Feed fetch status
 const fetchStatus = ref({ interval_minutes: null, next_run: null, last_run: null })
@@ -471,9 +515,10 @@ const form = reactive({
   briefing_model_name: '',
   briefing_max_tokens: 2048,
   briefing_temperature: 0.7,
-  tts_engine: 'moss-ttsd',
+  tts_engine: 'edge-tts',
   tts_nano_ref_text: '',
   tts_nano_temperature: 0.5,
+  tts_edge_voice: 'zh-CN-XiaoxiaoNeural',
 })
 
 onMounted(async () => {
@@ -483,6 +528,7 @@ onMounted(async () => {
     loadTtsEngines(),
     loadRefAudios(),
     loadFetchStatus(),
+    loadEdgeVoices(),
   ])
   loading.value = false
   // Note: TTS backend status is NOT checked on mount — it requires downloading
@@ -512,6 +558,7 @@ async function loadSettings() {
   if (s.tts_engine) form.tts_engine = s.tts_engine
   if (s.tts_nano_temperature) form.tts_nano_temperature = parseFloat(s.tts_nano_temperature)
   if (s.tts_nano_ref_audio) refAudioPath.value = s.tts_nano_ref_audio
+  if (s.tts_edge_voice) form.tts_edge_voice = s.tts_edge_voice
 }
 
 async function loadRefAudios() {
@@ -678,6 +725,38 @@ async function loadTtsStatus() {
   }
 }
 
+async function loadEdgeVoices() {
+  edgeVoicesLoading.value = true
+  try {
+    const res = await api.get('/settings/tts-edge-voices', { timeout: 15000 })
+    edgeVoices.value = res.data.voices || []
+  } catch (e) {
+    console.error('Failed to load edge voices:', e)
+    // Don't show toast — it's not critical
+  } finally {
+    edgeVoicesLoading.value = false
+  }
+}
+
+async function previewEdgeVoice() {
+  if (!form.tts_edge_voice || previewingVoice.value) return
+  previewingVoice.value = true
+  try {
+    const res = await api.get(`/settings/tts-edge-voices/${encodeURIComponent(form.tts_edge_voice)}/preview`, {
+      responseType: 'blob',
+      timeout: 30000,
+    })
+    const url = URL.createObjectURL(res.data)
+    const audio = new Audio(url)
+    audio.onended = () => URL.revokeObjectURL(url)
+    audio.play().catch(() => showToast('试听播放失败', 'error'))
+  } catch (e) {
+    showToast('试听失败：无法生成语音', 'error')
+  } finally {
+    previewingVoice.value = false
+  }
+}
+
 async function refreshTtsStatus() {
   checkingTts.value = true
   await loadTtsStatus()
@@ -714,6 +793,7 @@ async function saveSettings() {
       briefing_temperature: String(form.briefing_temperature),
       tts_engine: form.tts_engine,
       tts_nano_temperature: String(form.tts_nano_temperature),
+      tts_edge_voice: form.tts_edge_voice,
     })
     showToast('设置已保存！', 'success')
   } catch (e) {

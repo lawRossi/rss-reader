@@ -55,11 +55,32 @@ async def init_db():
         except Exception:
             await session.rollback()  # Column already exists
 
+        # DailyBriefing.tts_edge_voice
+        try:
+            from sqlalchemy import text
+            await session.execute(
+                text("ALTER TABLE daily_briefings ADD COLUMN tts_edge_voice VARCHAR(100)")
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()  # Column already exists
+
+        # ScheduledTask.tts_edge_voice
+        try:
+            from sqlalchemy import text
+            await session.execute(
+                text("ALTER TABLE scheduled_tasks ADD COLUMN tts_edge_voice VARCHAR(100)")
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()  # Column already exists
+
 
 async def seed_default_settings():
     """Insert default LLM, TTS and fetch settings if not present."""
     from app.models import Setting
     from app.config import DEFAULT_LLM_SETTINGS, DEFAULT_TTS_SETTINGS, DEFAULT_FETCH_SETTINGS
+    from app.services.tts_service import set_selected_engine
 
     async with async_session() as session:
         all_defaults = {**DEFAULT_LLM_SETTINGS, **DEFAULT_TTS_SETTINGS, **DEFAULT_FETCH_SETTINGS}
@@ -68,3 +89,8 @@ async def seed_default_settings():
             if existing is None:
                 session.add(Setting(key=key, value=value))
         await session.commit()
+
+        # Sync active TTS engine
+        engine_setting = await session.get(Setting, "tts_engine")
+        if engine_setting:
+            set_selected_engine(engine_setting.value)

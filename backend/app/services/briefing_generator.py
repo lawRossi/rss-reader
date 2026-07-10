@@ -170,6 +170,7 @@ async def generate_briefing(
     time_range: str = "today",
     group_id: int | None = None,
     ref_audio_id: str | None = None,
+    tts_edge_voice: str | None = None,
 ) -> DailyBriefing | None:
     """Generate a daily briefing based on recent articles.
 
@@ -183,6 +184,7 @@ async def generate_briefing(
                     "12h" (last 12 hours), "24h" (last 24 hours)
         group_id: Filter by feed group ID; None means all groups
         ref_audio_id: Override reference audio ID; None = use global config default
+        tts_edge_voice: Override Edge TTS voice; None = use global config default
     """
     # Use local timezone for date_str and "today" boundary
     now_local = datetime.now(LOCAL_TZ)
@@ -266,6 +268,7 @@ async def generate_briefing(
         content_json=json.dumps(article_list, ensure_ascii=False),
         status="generating",
         ref_audio_id=ref_audio_id,
+        tts_edge_voice=tts_edge_voice,
     )
     db.add(briefing)
     await db.flush()

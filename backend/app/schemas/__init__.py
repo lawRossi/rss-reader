@@ -168,6 +168,7 @@ class DailyBriefingOut(BaseModel):
     audio_path: Optional[str] = None
     status: str
     ref_audio_id: Optional[str] = None
+    tts_edge_voice: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -178,6 +179,7 @@ class DailyBriefingGenerate(BaseModel):
     time_range: str = "today"   # "today", "12h", "24h"
     group_id: Optional[int] = None  # None = all groups
     ref_audio_id: Optional[str] = None  # Override reference audio; None = use global
+    tts_edge_voice: Optional[str] = None  # Override Edge TTS voice; None = use global
 
 
 # ─── Scheduled Task ───
@@ -188,6 +190,7 @@ class ScheduledTaskCreate(BaseModel):
     group_id: Optional[int] = None
     include_audio: bool = True
     ref_audio_id: Optional[str] = None  # Override reference audio; None = use global
+    tts_edge_voice: Optional[str] = None  # Override Edge TTS voice; None = use global
 
 
 class ScheduledTaskUpdate(BaseModel):
@@ -197,6 +200,7 @@ class ScheduledTaskUpdate(BaseModel):
     group_id: Optional[int] = None
     include_audio: Optional[bool] = None
     ref_audio_id: Optional[str] = None
+    tts_edge_voice: Optional[str] = None
     enabled: Optional[bool] = None
 
 
@@ -208,6 +212,7 @@ class ScheduledTaskOut(BaseModel):
     group_id: Optional[int] = None
     include_audio: bool
     ref_audio_id: Optional[str] = None
+    tts_edge_voice: Optional[str] = None
     enabled: bool
     last_run_at: Optional[datetime] = None
     created_at: datetime

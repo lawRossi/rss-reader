@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -15,6 +15,7 @@ from app.models import Setting
 from app.schemas import SettingOut, SettingsUpdate
 from app.config import AUDIO_DIR
 from app.services.task_scheduler import scheduler
+from app.services.tts_service import set_selected_engine
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
@@ -80,6 +81,10 @@ async def update_settings(update: SettingsUpdate, db: AsyncSession = Depends(get
             db.add(Setting(key=key, value=value))
     await db.flush()
 
+    # Sync TTS engine selection if changed
+    if "tts_engine" in update.settings:
+        set_selected_engine(update.settings["tts_engine"])
+
     # Notify scheduler if fetch_interval changed
     if "fetch_interval" in update.settings:
         try:
@@ -98,15 +103,89 @@ async def update_settings(update: SettingsUpdate, db: AsyncSession = Depends(get
 
 @router.get("/tts-engines")
 async def get_tts_engine_options():
-    """Get available TTS engines (simplified — nano only)."""
+    """Get available TTS engines."""
+    from app.config import TTS_ENGINE_INFO
     return {
-        "engines": {
-            "moss-tts-nano": {
-                "label": "MOSS-TTS-Nano (音色克隆)",
-                "description": "基于参考音频克隆音色，单人播报",
-            }
-        }
+        "engines": TTS_ENGINE_INFO,
     }
+
+
+@router.get("/tts-edge-voices")
+async def get_edge_tts_voices():
+    """List available Edge TTS voices, prioritizing Chinese voices."""
+    try:
+        import edge_tts
+        voices = await edge_tts.list_voices()
+        result = []
+        for v in voices:
+            display_name = v.get('FriendlyName') or v.get('ShortName', '')
+            locale = v.get('Locale', '')
+            gender = v.get('Gender', '')
+            result.append({
+                "short_name": v['ShortName'],
+                "locale": locale,
+                "gender": gender,
+                "display_name": display_name,
+                "is_chinese": locale.startswith('zh-'),
+            })
+        # Sort: Chinese voices first, then by locale
+        result.sort(key=lambda x: (0 if x['is_chinese'] else 1, x['locale'], x['short_name']))
+        return {"voices": result}
+    except ImportError:
+        raise HTTPException(status_code=503, detail="edge-tts is not installed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list voices: {e}")
+
+
+@router.get("/tts-edge-voices/{voice_name}/preview")
+async def preview_edge_tts_voice(voice_name: str):
+    """Preview a specific Edge TTS voice with a short test sentence."""
+    try:
+        import edge_tts
+        import miniaudio
+        import numpy as np
+        import struct
+        import wave as _wave
+        import io
+
+        text = "你好，欢迎使用RSS阅读器。这是语音预览，听听这个音色是否合适。"
+        communicate = edge_tts.Communicate(text, voice_name)
+        mp3_data = bytearray()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                mp3_data.extend(chunk["data"])
+
+        if not mp3_data:
+            raise HTTPException(status_code=500, detail="No audio generated")
+
+        # Decode MP3 → PCM float32 mono 24kHz via miniaudio
+        result = miniaudio.decode(
+            bytes(mp3_data),
+            output_format=miniaudio.SampleFormat.FLOAT32,
+            nchannels=1,
+            sample_rate=24000,
+        )
+        samples = np.frombuffer(result.samples, dtype=np.float32)
+
+        # Build WAV in memory
+        buf = io.BytesIO()
+        with _wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(24000)
+            # Convert float32 [-1,1] to int16
+            int16 = (samples * 32767).astype(np.int16)
+            wf.writeframes(int16.tobytes())
+
+        wav_bytes = buf.getvalue()
+        return Response(content=wav_bytes, media_type="audio/wav")
+
+    except ImportError:
+        raise HTTPException(status_code=503, detail="edge-tts or miniaudio not installed")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preview failed: {e}")
 
 
 # ─── Multiple Reference Audios API ───

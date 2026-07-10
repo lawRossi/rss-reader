@@ -16,6 +16,7 @@ class DailyBriefing(Base):
     audio_path = Column(String(1024), default="")
     status = Column(String(20), default="pending")  # pending, generating, completed, failed
     ref_audio_id = Column(String(50), nullable=True)  # Override reference audio; None = use global
+    tts_edge_voice = Column(String(100), nullable=True)  # Override Edge TTS voice; None = use global
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     def __repr__(self):

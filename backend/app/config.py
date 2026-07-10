@@ -27,18 +27,26 @@ DEFAULT_LLM_SETTINGS = {
     "llm_temperature": "0.7",
 }
 
-# Default TTS settings (moss-tts-nano only; moss-ttsd removed in simplification)
+# Default TTS settings
 DEFAULT_TTS_SETTINGS = {
+    "tts_engine": "edge-tts",          # Default TTS engine: "edge-tts" or "moss-tts-nano"
     "tts_nano_ref_audios": "[]",       # JSON array of [{id, name, filename, text, active}]
     "tts_nano_ref_audio": "",          # Legacy single ref audio path
     "tts_nano_ref_text": "",           # Legacy single ref audio text
     "tts_nano_temperature": "0.5",     # Generation temperature (0.3-0.6 recommended)
+    "tts_edge_voice": "zh-CN-XiaoxiaoNeural",  # Edge TTS voice
 }
 
-# TTS engine info (single engine)
+# TTS engine info
 TTS_ENGINE_INFO = {
-    "label": "MOSS-TTS-Nano (音色克隆)",
-    "description": "基于参考音频克隆音色，单人播报，自然流畅",
+    "edge-tts": {
+        "label": "Edge TTS (微软在线)",
+        "description": "微软 Edge 在线语音合成，无需额外配置，音质自然，支持多音色",
+    },
+    "moss-tts-nano": {
+        "label": "MOSS-TTS-Nano (音色克隆)",
+        "description": "基于参考音频克隆音色，单人播报，自然流畅",
+    },
 }
 
 # Default fetch settings

@@ -19,17 +19,21 @@
           <div class="flex items-center gap-2 flex-wrap">
             <!-- Engine badge -->
             <span class="px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap"
-              :class="isDialogue
-                ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600'
-                : 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-600'"
-              :title="ttsEngineName === 'moss-tts-nano' ? '音色克隆：使用参考音频音色' : '双人对播'">
-              {{ isDialogue ? '🎙️ 双人对播' : (ttsEngineName === 'moss-tts-nano' ? '🎤 音色克隆' : '🎤 单人播报') }}
+              :class="engineBadgeClass"
+              :title="engineBadgeTitle">
+              {{ engineBadgeText }}
             </span>
-            <!-- Reference audio label -->
+            <!-- Reference audio label (nano) -->
             <span v-if="briefing.ref_audio_id && refAudioLabel"
               class="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-600 whitespace-nowrap"
               title="此次使用的参考音色">
               🎤 {{ refAudioLabel }}
+            </span>
+            <!-- Edge TTS voice label -->
+            <span v-if="briefing.tts_edge_voice"
+              class="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-600 whitespace-nowrap"
+              title="此次使用的 Edge TTS 音色">
+              🌐 {{ briefing.tts_edge_voice }}
             </span>
             <!-- Delete button -->
             <button @click="confirmDelete"
@@ -306,6 +310,27 @@ function restoreProgress(saved) {
 const isDialogue = computed(() => {
   if (!briefing.value?.script_text) return false
   return briefing.value.script_text.includes('[S1]') || briefing.value.script_text.includes('[S2]')
+})
+
+// Engine badge display
+const engineBadgeClass = computed(() => {
+  if (isDialogue.value) return 'bg-purple-100 dark:bg-purple-900/30 text-purple-600'
+  if (ttsEngineName.value === 'edge-tts') return 'bg-blue-100 dark:bg-blue-900/30 text-blue-600'
+  return 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-600'
+})
+
+const engineBadgeTitle = computed(() => {
+  if (isDialogue.value) return '双人对播模式'
+  if (ttsEngineName.value === 'edge-tts') return 'Edge TTS 微软在线语音合成'
+  if (ttsEngineName.value === 'moss-tts-nano') return '音色克隆：使用参考音频音色'
+  return '单人播报'
+})
+
+const engineBadgeText = computed(() => {
+  if (isDialogue.value) return '🎙️ 双人对播'
+  if (ttsEngineName.value === 'edge-tts') return '🌐 Edge TTS'
+  if (ttsEngineName.value === 'moss-tts-nano') return '🎤 音色克隆'
+  return '🎤 单人播报'
 })
 
 // Parse [S1]/[S2] segments for dialogue display
