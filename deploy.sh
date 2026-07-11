@@ -338,9 +338,17 @@ configure_nginx() {
     mkdir -p "$nginx_conf_dir"
 
     # 写入 nginx 配置
+    # 注意：使用 <<EOF（加引号）但 nginx $变量用反斜杠转义
     cat > "$NGINX_CONF" <<EOF
 # RSS Reader - Nginx Configuration
 # 前端端口: ${NGINX_PORT} | 后端代理: http://127.0.0.1:${BACKEND_PORT}
+
+# ── 上游 keepalive 连接池 ──
+# 减少 TCP 握手开销，提高密集请求下的性能
+upstream rss_backend {
+    server 127.0.0.1:${BACKEND_PORT};
+    keepalive 32;
+}
 
 server {
     listen ${NGINX_PORT};
@@ -366,24 +374,68 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
-    # ── API 反向代理到后端 ──
-    location /api {
-        proxy_pass http://127.0.0.1:${BACKEND_PORT};
+    # ── SSE 端点 1：AI 摘要流式输出 ──
+    # 必须关缓冲（proxy_buffering off），让 SSE 逐字推送
+    location ~ ^/api/articles/\\d+/summary {
+        proxy_pass http://rss_backend;
         proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
 
-        # SSE (Server-Sent Events) 支持
-        proxy_set_header Connection '';
         proxy_buffering off;
         proxy_cache off;
         chunked_transfer_encoding on;
 
-        # 超时设置
+        # SSE 长连接：LLM 生成慢时可等待更久
+        proxy_read_timeout 300s;
         proxy_connect_timeout 60s;
-        proxy_read_timeout 120s;
+        proxy_send_timeout 60s;
+    }
+
+    # ── SSE 端点 2：每日播报音频流 ──
+    # 关缓冲，允许超长等待（TTS 生成可能持续数分钟）
+    location ~ ^/api/daily-briefings/\\d+/stream-audio {
+        proxy_pass http://rss_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding on;
+
+        proxy_read_timeout 600s;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    # ── 普通 API（带缓冲，利用 keepalive） ──
+    # 启用 proxy_buffering，Nginx 先收完后端响应再发给客户端。
+    # 即使客户端中途断开（SPA 切页面），后端连接也能快速释放，
+    # 不会产生 499。
+    location /api {
+        proxy_pass http://rss_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # 启用缓冲（默认即 on），快速释放后端连接
+        proxy_buffering on;
+        proxy_buffer_size 4k;
+        proxy_buffers 8 4k;
+        proxy_busy_buffers_size 8k;
+
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 60s;
         proxy_send_timeout 60s;
 
         # 请求体大小（音频上传等）
@@ -392,11 +444,11 @@ server {
 
     # ── Docs / OpenAPI（直接透传） ──
     location /docs {
-        proxy_pass http://127.0.0.1:${BACKEND_PORT}/docs;
+        proxy_pass http://rss_backend/docs;
         proxy_set_header Host \$host;
     }
     location /openapi.json {
-        proxy_pass http://127.0.0.1:${BACKEND_PORT}/openapi.json;
+        proxy_pass http://rss_backend/openapi.json;
         proxy_set_header Host \$host;
     }
 }
